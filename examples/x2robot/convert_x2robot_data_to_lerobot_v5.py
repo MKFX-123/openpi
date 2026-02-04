@@ -38,11 +38,12 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "plugusb_0119+0120+0121_sm2sm_jr"
+# REPO_NAME = "plugusb_0119+0120+0121_sm2sm_jr"
+REPO_NAME = "restockcoke_0203_sm2sm"
 RAW_DATASET_PATHS = [
-    './datasets/x2robot/plugusb_0119/',
-    './datasets/x2robot/plugusb_0120/',
-    './datasets/x2robot/plugusb_0121/',
+    './datasets/x2robot/restock_coke_0203/',
+    # './datasets/x2robot/plugusb_0120/',
+    # './datasets/x2robot/plugusb_0121/',
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -52,37 +53,37 @@ FILE_CAMERA_MAPPING = {
 }
 
 STATE_KEYS = [
-    # 'follow_left_position',
-    # 'follow_left_rotation', 
-    # 'follow_left_gripper',
-    # 'follow_right_position',
-    # 'follow_right_rotation',
-    'follow_right_joint_pos',
+    'follow_left_position',
+    'follow_left_rotation', 
+    'follow_left_gripper',
+    'follow_right_position',
+    'follow_right_rotation',
+    # 'follow_right_joint_pos',
     'follow_right_gripper',   
-    # 'master_left_position',
-    # 'master_left_rotation',
-    # 'master_left_gripper', 
-    # 'master_right_position',
-    # 'master_right_rotation',
-    'master_right_joint_pos',
+    'master_left_position',
+    'master_left_rotation',
+    'master_left_gripper', 
+    'master_right_position',
+    'master_right_rotation',
+    # 'master_right_joint_pos',
     'master_right_gripper',
 ]
 
 ACTION_KEYS = [
-    # 'follow_left_position',
-    # 'follow_left_rotation', 
-    # 'follow_left_gripper',
-    # 'follow_right_position',
-    # 'follow_right_rotation',
-    'follow_right_joint_pos',
+    'follow_left_position',
+    'follow_left_rotation', 
+    'follow_left_gripper',
+    'follow_right_position',
+    'follow_right_rotation',
+    # 'follow_right_joint_pos',
     'follow_right_gripper',
     
-    # 'master_left_position',
-    # 'master_left_rotation',
-    # 'master_left_gripper', 
-    # 'master_right_position',
-    # 'master_right_rotation',
-    'master_right_joint_pos',
+    'master_left_position',
+    'master_left_rotation',
+    'master_left_gripper', 
+    'master_right_position',
+    'master_right_rotation',
+    # 'master_right_joint_pos',
     'master_right_gripper',
 ]
 
@@ -147,7 +148,7 @@ def transcode_video_ffmpeg(
     output_path: Path,
     target_size: tuple[int, int] = (320, 240),
     fps: int = 20,
-    vcodec: str = "libsvtav1",
+    vcodec: str = "libx264",
     pix_fmt: str = "yuv420p",
     g: int = 2,
     crf: int = 30,
@@ -211,7 +212,7 @@ def transcode_single_video(
         output_path,
         target_size,
         fps,
-        vcodec="libsvtav1",
+        vcodec="libx264",
         pix_fmt="yuv420p",
         g=2,
         crf=30

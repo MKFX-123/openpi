@@ -1387,6 +1387,28 @@ _CONFIGS = [
         
         exp_name="pipeline_0120_sm2sm_h9f8oro_a20_dm10dh50df90po20",
     ),
+    # restock_coke
+    TrainConfig(
+        name="restockcoke_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="restockcoke_0203_sm2sm", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=2,
+            # only_right_obs=True,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.50,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/public/xuyuanfan/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=128,
+        
+        exp_name="restockcoke_0203_sm2sm_h3f2_a20_dm10dh50df50po20",
+    ),
+
     TrainConfig(
         name="wipe_sm2sm",
         model=pi0_config.Pi0Config(action_horizon=30),

@@ -1,5 +1,6 @@
 import logging
 import os
+os.environ["OPENPI_DATA_HOME"] = "/mnt/public/xuyuanfan/.cache/openpi"
 
 import jax
 import numpy as np

@@ -63,6 +63,7 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
             name=config.exp_name,
             config=dataclasses.asdict(config),
             project=config.project_name,
+            mode="offline",
         )
         (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
 
