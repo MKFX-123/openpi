@@ -38,11 +38,11 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "plugusb_0119+0120+0121_sm2sm_jr"
+REPO_NAME = "microwave_1218+0109+0124raw_sm2sm_debug_ttyfix"
 RAW_DATASET_PATHS = [
-    './datasets/x2robot/plugusb_0119/',
-    './datasets/x2robot/plugusb_0120/',
-    './datasets/x2robot/plugusb_0121/',
+    './datasets/x2robot/microwave_1218/',
+    './datasets/x2robot/microwave_0109/',
+    './datasets/microwave_0124_labled/',
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -52,37 +52,34 @@ FILE_CAMERA_MAPPING = {
 }
 
 STATE_KEYS = [
-    # 'follow_left_position',
-    # 'follow_left_rotation', 
-    # 'follow_left_gripper',
-    # 'follow_right_position',
-    # 'follow_right_rotation',
-    'follow_right_joint_pos',
+    'follow_left_position',
+    'follow_left_rotation', 
+    'follow_left_gripper',
+    'follow_right_position',
+    'follow_right_rotation',
     'follow_right_gripper',   
-    # 'master_left_position',
-    # 'master_left_rotation',
-    # 'master_left_gripper', 
-    # 'master_right_position',
-    # 'master_right_rotation',
-    'master_right_joint_pos',
+
+    'master_left_position',
+    'master_left_rotation',
+    'master_left_gripper', 
+    'master_right_position',
+    'master_right_rotation',
     'master_right_gripper',
 ]
 
 ACTION_KEYS = [
-    # 'follow_left_position',
-    # 'follow_left_rotation', 
-    # 'follow_left_gripper',
-    # 'follow_right_position',
-    # 'follow_right_rotation',
-    'follow_right_joint_pos',
+    'follow_left_position',
+    'follow_left_rotation', 
+    'follow_left_gripper',
+    'follow_right_position',
+    'follow_right_rotation',
     'follow_right_gripper',
     
-    # 'master_left_position',
-    # 'master_left_rotation',
-    # 'master_left_gripper', 
-    # 'master_right_position',
-    # 'master_right_rotation',
-    'master_right_joint_pos',
+    'master_left_position',
+    'master_left_rotation',
+    'master_left_gripper', 
+    'master_right_position',
+    'master_right_rotation',
     'master_right_gripper',
 ]
 
@@ -157,6 +154,7 @@ def transcode_video_ffmpeg(
     
     cmd = [
         "ffmpeg", "-y",
+        "-nostdin",
         "-i", input_path,
         "-vf", f"scale={target_size[0]}:{target_size[1]}",
         "-c:v", vcodec,
