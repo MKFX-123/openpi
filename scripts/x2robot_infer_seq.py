@@ -6,6 +6,7 @@ from collections import deque
 from pathlib import Path
 from typing import Literal
 
+import os
 import tyro
 import json
 import cv2
@@ -29,6 +30,8 @@ class Args:
     move_steps: int = 15
     only_right_arm: bool = False
     latency_step: int = None
+    server_ip: str = None
+    server_port: int = 57770
 
 def _load_norm_stats(policy_config: str, policy_dir: str) -> dict | None:
     train_config = _config.get_config(policy_config)
@@ -77,6 +80,9 @@ def main(args: Args) -> None:
     if args.latency_step is None:
         args.latency_step = args.state_future_size
         logging.info(f"Using latency_step equal to state_future_size: {args.latency_step}")
+    if args.server_ip is None:
+        args.server_ip = os.getenv("OPENPI_SERVER_IP", "0.0.0.0")
+        logging.info(f"Using server_ip: {args.server_ip}")
     
     # Load policy
     logging.info(f"Loading policy from {args.policy_dir}")
@@ -90,11 +96,9 @@ def main(args: Args) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setblocking(True) #设置通信是阻塞式
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ip = '192.168.77.58' # 192.168.77.58
-    port = 57770
-    sock.bind((ip, port))
+    sock.bind((args.server_ip, args.server_port))
     sock.listen(1)
-    print(f"Server is listening on {ip}:{port}")
+    print(f"Server is listening on {args.server_ip}:{args.server_port}")
 
     conn, addr = sock.accept()
     print(f"Connection from {addr}")
