@@ -1480,6 +1480,33 @@ _CONFIGS = [
         
         exp_name="blindplug_0129_sm2sm_h3f2oro_a30_dm10dh50df50po20",
     ),
+    TrainConfig(
+        name="microwave_cmp",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="microwave_0124cleaned_sm2sm", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=0,
+            state_future_size=2,
+            action_dim=28,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="microwave_cmp_0124cleaned_sm2sm_h0f2_a30",
+    ),
+    TrainConfig(
+        name="microwave_controller",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="microwave_1218+0109+0325+0327_s2m", # Multiple datasets separated by comma
+            mode="s2m",
+            action_dim=14,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="microwave_1218+0109+0325+0327_s2m_a30",
+    ),
+    
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
