@@ -99,6 +99,13 @@ class DataConfig:
     # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
     datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
 
+    # Only used for HDF5 data loader (ie currently only used for velocity debiased data).
+    hdf5_data_dirs: list[str] | None = None
+    # Validation set ratio for HDF5 datasets.
+    hdf5_val_ratio: float = 0.1
+    # Camera name mapping for HDF5 datasets (HDF5 field name → model input field name).
+    hdf5_camera_mapping: dict[str, str] | None = None
+
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -287,7 +294,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
 
-        model_transforms = ModelTransformFactory()(model_config)
+        model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
 
         # Create base config and fix zero-variance dimensions if needed
         base_config = self.create_base_config(assets_dirs, model_config)
@@ -442,7 +449,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # Model transforms include things like tokenizing the prompt and action targets
         # You do not need to change anything here for your own dataset.
-        model_transforms = ModelTransformFactory()(model_config)
+        model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
@@ -506,7 +513,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
 
-        model_transforms = ModelTransformFactory()(model_config)
+        model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
 
         assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
 
@@ -550,13 +557,136 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             inputs=[droid_policy.DroidInputs(model_type=model_config.model_type)],
             outputs=[droid_policy.DroidOutputs()],
         )
-        model_transforms = ModelTransformFactory()(model_config)
+        model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class VelocityDebiasDataConfig(DataConfigFactory):
+    """速度去偏 HDF5 数据集配置。
+
+    支持直接从本地 HDF5 文件加载数据，无需转换为 LeRobot 格式。
+
+    HDF5 文件结构要求：
+        - action_chunks: (N, 30, 14) - 动作序列
+        - face_images: (N, 3, 224, 224) - 正面相机图像
+        - left_images: (N, 3, 224, 224) - 左手腕相机图像
+        - right_images: (N, 3, 224, 224) - 右手腕相机图像
+        - states: (N, 14) - 机器人状态
+        - frame_indices: (N,) - 帧索引
+    """
+
+    # 设置默认 repo_id，避免 tyro 要求用户提供
+    repo_id: str = "velocity_debias_hdf5"
+
+    # HDF5 文件目录列表
+    hdf5_data_dirs: list[str] = dataclasses.field(default_factory=list)
+
+    # 验证集比例
+    hdf5_val_ratio: float = 0.1
+
+    # 相机名称映射（HDF5字段名 → 模型输入字段名）
+    hdf5_camera_mapping: dict[str, str] | None = dataclasses.field(
+        default_factory=lambda: {
+            "face_images": "face_view",
+            "left_images": "left_wrist_view",
+            "right_images": "right_wrist_view",
+        }
+    )
+
+    # 模式（用于复用 arx_policy 数据变换）
+    mode: str = "s2m"
+
+    # 动作维度
+    action_dim: int = 14
+
+    # 其他 ARX 相关参数
+    use_delta_actions: bool = False
+    mask_history_slave_states: bool = False
+    state_history_size: int = 0
+    state_future_size: int = 0
+    state_step: int = 1
+    slave_state_dim: int = 14
+    random_drop_master: float = 0.0
+    random_drop_history: float = 0.0
+    random_drop_future: float = 0.0
+    random_pos_offset: float = 0.0
+    only_right_obs: bool = False
+
+    @property
+    def state_sequence_length(self) -> int:
+        return self.state_history_size + 1 + self.state_future_size
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # 复用 LeRobotX2robotDataConfig 的数据变换逻辑
+        data_transforms = _transforms.Group(
+            inputs=[arx_policy.ArxInputs(
+                mode=self.mode,
+                action_dim=model_config.action_dim,
+                model_type=model_config.model_type,
+                state_history_size=self.state_history_size,
+                state_future_size=self.state_future_size,
+                slave_state_dim=self.slave_state_dim,
+                mask_history_slave_states=self.mask_history_slave_states,
+                random_drop_master=self.random_drop_master,
+                random_drop_history=self.random_drop_history,
+                random_drop_future=self.random_drop_future,
+                random_pos_offset=self.random_pos_offset,
+                only_right_obs=self.only_right_obs,
+            )],
+            outputs=[arx_policy.ArxOutputs(action_dim=self.action_dim)],
+        )
+
+        if self.use_delta_actions:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
+
+        # 创建基础配置并修复零方差维度
+        base_config = self.create_base_config(assets_dirs, model_config)
+
+        # 修复零方差维度（如果配置了随机丢弃）
+        if self.random_drop_master > 0.0 or self.random_drop_future > 0.0:
+            import numpy as np
+
+            norm_stats = dict(base_config.norm_stats)  # 浅拷贝
+            state_stats = norm_stats["state"]
+            new_std = np.array(state_stats.std, copy=True)
+            zero_var_indices = np.where(new_std == 0)[0]
+            if len(zero_var_indices) > 0:
+                new_std[zero_var_indices] = 1.0
+                logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
+
+                # 重建 NormStats
+                norm_stats["state"] = _normalize.NormStats(
+                    mean=state_stats.mean,
+                    std=new_std,
+                    q01=state_stats.q01,
+                    q99=state_stats.q99,
+                )
+                base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
+
+        return dataclasses.replace(
+            base_config,
+            norm_stats=None,  # 显式设置归一化统计为 None
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            state_history_size=self.state_history_size,
+            state_future_size=self.state_future_size,
+            hdf5_data_dirs=self.hdf5_data_dirs,
+            hdf5_val_ratio=self.hdf5_val_ratio,
+            hdf5_camera_mapping=self.hdf5_camera_mapping,
         )
 
 
@@ -601,7 +731,7 @@ class TrainConfig:
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
-    batch_size: int = 16
+    batch_size: int = 32
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
@@ -1480,6 +1610,36 @@ _CONFIGS = [
         
         exp_name="blindplug_0129_sm2sm_h3f2oro_a30_dm10dh50df50po20",
     ),
+    TrainConfig(
+        name="microwave_all",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="microwave_all_s2m", # Multiple datasets separated by comma
+            mode="s2m",
+            only_right_obs=False,
+            action_dim=14,
+        ),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="microwave_all_s2m_a30",
+    ),
+    TrainConfig(
+        name="microwave_all_debiased",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=VelocityDebiasDataConfig(
+            hdf5_data_dirs=[
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_1218",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0325",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0327",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0109",
+            ],
+            mode="s2m",
+            action_dim=14,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="microwave_all_debiased_s2m_a30",
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
