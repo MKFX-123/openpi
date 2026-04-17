@@ -32,6 +32,7 @@ class Args:
     latency_step: int = None
     server_ip: str = None
     server_port: int = 57770
+    skip_norm: bool = False
 
 def _load_norm_stats(policy_config: str, policy_dir: str) -> dict | None:
     train_config = _config.get_config(policy_config)
@@ -68,6 +69,10 @@ def main(args: Args) -> None:
     
     # Load config params if not specified
     cfg = _config.get_config(args.policy_config)
+    # 如果 skip_norm，在配置中设置 norm_stats=None 以禁用策略归一化变换
+    if args.skip_norm:
+        cfg = dataclasses.replace(cfg, norm_stats=None)
+        logging.info("策略配置中已禁用归一化 (norm_stats=None)")
     if args.state_history_size is None:
         args.state_history_size = getattr(cfg.data, 'state_history_size', 0)
         logging.info(f"Using state_history_size from config: {args.state_history_size}")
@@ -87,7 +92,11 @@ def main(args: Args) -> None:
     # Load policy
     logging.info(f"Loading policy from {args.policy_dir}")
     policy = _policy_config.create_trained_policy(cfg, args.policy_dir)
-    norm_stats = _load_norm_stats(args.policy_config, args.policy_dir)
+    # 如果未跳过归一化，则加载 norm stats（供脚本自己使用）
+    norm_stats = None
+    if not args.skip_norm:
+        norm_stats = _load_norm_stats(args.policy_config, args.policy_dir)
+        logging.info("已加载归一化统计信息供脚本使用")
 
     state_seq_len = args.state_history_size + 1 + args.state_future_size
     latency_len = args.state_history_size + 1 + args.latency_step
@@ -148,10 +157,12 @@ def main(args: Args) -> None:
                     state[:, :28] = np.concatenate([slave_state, master_state], axis=1)
 
                 if args.only_right_arm:
-                    mean = np.asarray(norm_stats["state"].mean)
-                    state[:, 0:7] = mean[..., 0:7]
-                    if args.policy_mode in ["sm2m", "sm2sm"]:
-                        state[:, 14:21] = mean[..., 14:21]
+                    if norm_stats is not None:
+                        mean = np.asarray(norm_stats["state"].mean)
+                        state[:, 0:7] = mean[..., 0:7]
+                        if args.policy_mode in ["sm2m", "sm2sm"]:
+                            state[:, 14:21] = mean[..., 14:21]
+                    # 如果 norm_stats 为 None（skip_norm=True），状态维度保持其原始值
 
                 obs = {
                     'images': {
