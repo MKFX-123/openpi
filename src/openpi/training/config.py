@@ -679,7 +679,7 @@ class VelocityDebiasDataConfig(DataConfigFactory):
 
         return dataclasses.replace(
             base_config,
-            norm_stats=None,  # 显式设置归一化统计为 None
+            #norm_stats=None,  # 显式设置归一化统计为 None
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             state_history_size=self.state_history_size,

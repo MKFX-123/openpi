@@ -69,9 +69,9 @@ def main(args: Args) -> None:
     
     # Load config params if not specified
     cfg = _config.get_config(args.policy_config)
-    # 如果 skip_norm，在配置中设置 norm_stats=None 以禁用策略归一化变换
+    # 如果 skip_norm，则设置 policy_norm_stats=None 以禁用策略归一化变换
+    policy_norm_stats = None if args.skip_norm else None  # Will be loaded later if not skip_norm
     if args.skip_norm:
-        cfg = dataclasses.replace(cfg, norm_stats=None)
         logging.info("策略配置中已禁用归一化 (norm_stats=None)")
     if args.state_history_size is None:
         args.state_history_size = getattr(cfg.data, 'state_history_size', 0)
@@ -91,12 +91,62 @@ def main(args: Args) -> None:
     
     # Load policy
     logging.info(f"Loading policy from {args.policy_dir}")
-    policy = _policy_config.create_trained_policy(cfg, args.policy_dir)
-    # 如果未跳过归一化，则加载 norm stats（供脚本自己使用）
-    norm_stats = None
+
+    # Load norm stats for policy if not skipping normalization
+    policy_norm_stats = None
     if not args.skip_norm:
-        norm_stats = _load_norm_stats(args.policy_config, args.policy_dir)
-        logging.info("已加载归一化统计信息供脚本使用")
+        policy_norm_stats = _load_norm_stats(args.policy_config, args.policy_dir)
+        logging.info("已加载归一化统计信息供策略使用")
+
+    # Create policy - handle skip_norm case specially to avoid auto-loading
+    if args.skip_norm:
+        # Manually create policy without normalization transforms
+        import openpi.models.model as _model
+        import openpi.transforms as transforms
+        from openpi.training import checkpoints as _checkpoints
+
+        checkpoint_dir = _checkpoints.download.maybe_download(str(args.policy_dir))
+
+        # Check if this is a PyTorch model
+        import os
+        weight_path = os.path.join(checkpoint_dir, "model.safetensors")
+        is_pytorch = os.path.exists(weight_path)
+
+        logging.info("Loading model...")
+        if is_pytorch:
+            model = cfg.model.load_pytorch(cfg, weight_path)
+            model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+        else:
+            import jax.numpy as jnp
+            model = cfg.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+
+        data_config = cfg.data.create(cfg.assets_dirs, cfg.model)
+
+        # Create policy without normalization transforms
+        policy = _policy.Policy(
+            model,
+            transforms=[
+                transforms.InjectDefaultPrompt(None),
+                *data_config.data_transforms.inputs,
+                # Skip Normalize transform when skip_norm=True
+                *data_config.model_transforms.inputs,
+            ],
+            output_transforms=[
+                *data_config.model_transforms.outputs,
+                # Skip Unnormalize transform when skip_norm=True
+                *data_config.data_transforms.outputs,
+            ],
+            metadata=cfg.policy_metadata,
+            is_pytorch=is_pytorch,
+            pytorch_device="cpu" if is_pytorch else None,
+        )
+        logging.info("策略已创建（跳过归一化）")
+    else:
+        policy = _policy_config.create_trained_policy(cfg, args.policy_dir, norm_stats=policy_norm_stats)
+        logging.info("策略已创建（使用归一化）")
+
+    # policy_norm_stats 可供脚本后续使用（如 only_right_arm 模式下的状态掩码）
+    norm_stats = policy_norm_stats
 
     state_seq_len = args.state_history_size + 1 + args.state_future_size
     latency_len = args.state_history_size + 1 + args.latency_step
