@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.arx_policy as arx_policy
+import openpi.policies.acc_policy as acc_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -105,6 +106,8 @@ class DataConfig:
     hdf5_val_ratio: float = 0.1
     # Camera name mapping for HDF5 datasets (HDF5 field name → model input field name).
     hdf5_camera_mapping: dict[str, str] | None = None
+    # Scaler for action sequence length. The actual action length in dataset will be action_horizon * scaler.
+    scaler: float = 1.0
 
 
 class GroupFactory(Protocol):
@@ -241,7 +244,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     random_drop_future: float = 0.
     random_pos_offset: float = 0.
     only_right_obs: bool = False
-   
+    scaler:float = 1.
     @property
     def state_sequence_length(self) -> int:
         return self.state_history_size + 1 + self.state_future_size
@@ -293,6 +296,10 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
+        if self.scaler != 1:
+            data_transforms = data_transforms.push(
+                inputs=[acc_policy.VelocityAccInputs(action_horizon=model_config.action_horizon)],
+            )
 
         model_transforms = ModelTransformFactory(default_prompt="microwave task.")(model_config)
 
@@ -327,6 +334,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             state_history_size=self.state_history_size,
             state_future_size=self.state_future_size,
+            scaler=self.scaler,
         )
 
 
@@ -1645,6 +1653,7 @@ _CONFIGS = [
             mode="s2m",
             only_right_obs=False,
             action_dim=14,
+            #scaler=2,
         ),
         #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
@@ -1666,7 +1675,36 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         exp_name="microwave_all_debiased_s2m_a30",
     ),
-
+    TrainConfig(
+        name="microwave_all_debiased_norm",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=VelocityDebiasDataConfig(
+            hdf5_data_dirs=[
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_1218",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0325",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0327",
+                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0109",
+            ],
+            mode="s2m",
+            action_dim=14,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="microwave_all_debiased_norm_s2m_a30",
+    ),
+    TrainConfig(
+        name="microwave_scale",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="microwave_scale", # Multiple datasets separated by comma
+            mode="s2m",
+            only_right_obs=False,
+            action_dim=14,
+            scaler=2,
+        ),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="microwave_scale2_0_s2m_a30",
+    ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),

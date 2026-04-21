@@ -38,11 +38,12 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "microwave_1218+0109+0124raw_sm2sm_debug_ttyfix"
+REPO_NAME = "microwave_scale"
 RAW_DATASET_PATHS = [
-    './datasets/x2robot/microwave_1218/',
-    './datasets/x2robot/microwave_0109/',
-    './datasets/microwave_0124_labled/',
+    '/mnt/public/datasets/x2robot/microwave_1218/',
+    '/mnt/public/datasets/x2robot/microwave_0109/',
+    '/mnt/public/datasets/x2robot/microwave_0325/',
+    '/mnt/public/datasets/x2robot/microwave_0327/',
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -59,21 +60,21 @@ STATE_KEYS = [
     'follow_right_rotation',
     'follow_right_gripper',   
 
-    'master_left_position',
-    'master_left_rotation',
-    'master_left_gripper', 
-    'master_right_position',
-    'master_right_rotation',
-    'master_right_gripper',
+    # 'master_left_position',
+    # 'master_left_rotation',
+    # 'master_left_gripper', 
+    # 'master_right_position',
+    # 'master_right_rotation',
+    # 'master_right_gripper',
 ]
 
 ACTION_KEYS = [
-    'follow_left_position',
-    'follow_left_rotation', 
-    'follow_left_gripper',
-    'follow_right_position',
-    'follow_right_rotation',
-    'follow_right_gripper',
+    # 'follow_left_position',
+    # 'follow_left_rotation', 
+    # 'follow_left_gripper',
+    # 'follow_right_position',
+    # 'follow_right_rotation',
+    # 'follow_right_gripper',
     
     'master_left_position',
     'master_left_rotation',

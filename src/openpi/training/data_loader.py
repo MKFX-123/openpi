@@ -1119,7 +1119,7 @@ def create_data_loader(
     return create_torch_data_loader(
         data_config,
         model_config=config.model,
-        action_horizon=config.model.action_horizon,
+        action_horizon=int(config.model.action_horizon),
         batch_size=config.batch_size,
         sharding=sharding,
         shuffle=shuffle,
@@ -1177,7 +1177,7 @@ def create_torch_data_loader(
         - JAX: batch_size 除以 process_count
     """
     # 创建数据集
-    dataset = create_torch_dataset(data_config, action_horizon, model_config, split=split, val_ratio=val_ratio, split_seed=split_seed)
+    dataset = create_torch_dataset(data_config, int(action_horizon*data_config.scaler), model_config, split=split, val_ratio=val_ratio, split_seed=split_seed)
     # 应用数据变换
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
