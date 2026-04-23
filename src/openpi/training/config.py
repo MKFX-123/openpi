@@ -234,6 +234,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     random_drop_future: float = 0.
     random_pos_offset: float = 0.
     only_right_obs: bool = False
+    mask_left_obs: bool = False
    
     @property
     def state_sequence_length(self) -> int:
@@ -277,6 +278,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 random_drop_future=self.random_drop_future,
                 random_pos_offset=self.random_pos_offset,
                 only_right_obs=self.only_right_obs,
+                mask_left_obs=self.mask_left_obs,
             )],
             outputs=[arx_policy.ArxOutputs(action_dim=self.action_dim)],
         )
@@ -1370,22 +1372,22 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pipeline_sm2sm",
-        model=pi0_config.Pi0Config(action_horizon=20),
+        model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
-            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm", # Multiple datasets separated by comma
+            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm,pipeline_0422_sm2sm", # Multiple datasets separated by comma
             mode="sm2sm",
-            state_history_size=9,
-            state_future_size=8,
+            state_history_size=3,
+            state_future_size=2,
             only_right_obs=True,
             action_dim=28,
             random_drop_master=0.10,
             random_drop_history=0.50,
-            random_drop_future=0.90,
+            random_drop_future=0.50,
             random_pos_offset=0.020,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
-        exp_name="pipeline_0120_sm2sm_h9f8oro_a20_dm10dh50df90po20",
+        exp_name="pipeline_0120+0121+0422_sm2sm_h3f2oro_a30_dm10dh50df50po20",
     ),
     TrainConfig(
         name="wipe_sm2sm",
