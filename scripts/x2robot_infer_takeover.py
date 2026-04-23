@@ -108,7 +108,7 @@ def main(args: Args) -> None:
         checkpoint_dir = _checkpoints.download.maybe_download(str(args.policy_dir))
 
         # Check if this is a PyTorch model
-        import os
+
         weight_path = os.path.join(checkpoint_dir, "model.safetensors")
         is_pytorch = os.path.exists(weight_path)
 
