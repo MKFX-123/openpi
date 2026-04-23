@@ -233,6 +233,8 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     random_drop_history: float = 0.
     random_drop_future: float = 0.
     random_pos_offset: float = 0.
+    random_drop_label: float = 0.
+    random_drop_label_global: bool = True
     only_right_obs: bool = False
     mask_left_obs: bool = False
    
@@ -262,7 +264,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm"], f"Invalid mode: {self.mode}"
+        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm", "smw2smw"], f"Invalid mode: {self.mode}"
 
         data_transforms = _transforms.Group(
             inputs=[arx_policy.ArxInputs(
@@ -276,6 +278,8 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 random_drop_master=self.random_drop_master,
                 random_drop_history=self.random_drop_history,
                 random_drop_future=self.random_drop_future,
+                random_drop_label=self.random_drop_label,
+                random_drop_label_global=self.random_drop_label_global,
                 random_pos_offset=self.random_pos_offset,
                 only_right_obs=self.only_right_obs,
                 mask_left_obs=self.mask_left_obs,
@@ -1374,20 +1378,41 @@ _CONFIGS = [
         name="pipeline_sm2sm",
         model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
-            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm,pipeline_0422_sm2sm", # Multiple datasets separated by comma
+            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm,pipeline_0422_sm2sm,pipeline_0423_sm2sm", # Multiple datasets separated by comma
             mode="sm2sm",
-            state_history_size=3,
-            state_future_size=2,
-            only_right_obs=True,
+            state_history_size=9,
+            state_future_size=4,
+            mask_left_obs=True,
             action_dim=28,
             random_drop_master=0.10,
             random_drop_history=0.50,
-            random_drop_future=0.50,
+            random_drop_future=0.80,
             random_pos_offset=0.020,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
-        exp_name="pipeline_0120+0121+0422_sm2sm_h3f2oro_a30_dm10dh50df50po20",
+        exp_name="pipeline_0120+0121+0422+0423_sm2sm_h9f4mlo_a30_dm10dh50df80po20",
+    ),
+    TrainConfig(
+        name="pipeline_smw2smw",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pipeline_0422+0423_smw2smw", # Multiple datasets separated by comma
+            mode="smw2smw",
+            state_history_size=9,
+            state_future_size=4,
+            mask_left_obs=True,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.80,
+            random_pos_offset=0.020,
+            random_drop_label=0.5,
+            random_drop_label_global=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pipeline_0422+0423_smw2smw_h9f4mlo_a30_dm10dh50df80dlg50po20",
     ),
     TrainConfig(
         name="wipe_sm2sm",
