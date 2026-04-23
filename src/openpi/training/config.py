@@ -309,23 +309,26 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         # Fix zero-variance dimensions in norm_stats if configured
         if self.random_drop_master > 0. or self.random_drop_future > 0.:
             import numpy as np
-    
-            norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
-            state_stats = norm_stats["state"]
-            new_std = np.array(state_stats.std, copy=True)
-            zero_var_indices = np.where(new_std == 0)[0]
-            if len(zero_var_indices) > 0:
-                new_std[zero_var_indices] = 1.0
-                logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
-                
-                # NormStats is a pydantic dataclass, recreate it
-                norm_stats["state"] = _normalize.NormStats(
-                    mean=state_stats.mean,
-                    std=new_std,
-                    q01=state_stats.q01,
-                    q99=state_stats.q99,
-                )
-                base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
+
+            if base_config.norm_stats is None:
+                logging.warning("Cannot fix zero-variance dimensions: norm_stats is None")
+            else:
+                norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
+                state_stats = norm_stats["state"]
+                new_std = np.array(state_stats.std, copy=True)
+                zero_var_indices = np.where(new_std == 0)[0]
+                if len(zero_var_indices) > 0:
+                    new_std[zero_var_indices] = 1.0
+                    logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
+
+                    # NormStats is a pydantic dataclass, recreate it
+                    norm_stats["state"] = _normalize.NormStats(
+                        mean=state_stats.mean,
+                        std=new_std,
+                        q01=state_stats.q01,
+                        q99=state_stats.q99,
+                    )
+                    base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
 
         return dataclasses.replace(
             base_config,
@@ -734,8 +737,9 @@ class TrainConfig:
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
-    checkpoint_base_dir: str = "./checkpoints"
-
+    # checkpoint_base_dir: str = "./checkpoints"
+    checkpoint_base_dir: str = "/mnt/public/jzc/pi0_checkpoints/checkpoints/"
+    
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
@@ -1699,11 +1703,32 @@ _CONFIGS = [
             mode="s2m",
             only_right_obs=False,
             action_dim=14,
-            scaler=2,
+            scaler=1.6,
         ),
         #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        exp_name="microwave_scale2_0_s2m_a30",
+        exp_name="microwave_scale1_6_s2m_a30",
+    ),
+    TrainConfig(
+        name="pipeline_0422",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pipeline_0422", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=9,
+            state_future_size=8,
+            only_right_obs=True,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.90,
+            random_pos_offset=0.020,
+            scaler=1.2,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pipeline_0422_sm2sm_h9f8oro_a20_dm10dh50df90po20_acc12",
     ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
