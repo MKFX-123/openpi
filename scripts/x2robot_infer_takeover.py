@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Literal
 
 import os
+import sys
+import termios
+import tty
+import fcntl
 import tyro
 import json
 import cv2
@@ -16,6 +20,40 @@ from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 from openpi.training import checkpoints as _checkpoints
+
+
+class KeyboardListener:
+    """非阻塞键盘输入监听器（Linux终端）"""
+    def __init__(self):
+        self.old_settings = None
+
+    def __enter__(self):
+        try:
+            self.old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+            # 设置为非阻塞模式
+            flags = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        except Exception as e:
+            logging.warning(f"Failed to setup keyboard listener: {e}")
+            self.old_settings = None
+        return self
+
+    def __exit__(self, type, value, traceback):
+        if self.old_settings is not None:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+            except Exception:
+                pass
+
+    def get_key(self):
+        """获取按键，如果没有按键则返回None"""
+        try:
+            ch = sys.stdin.read(1)
+            return ch
+        except IOError:
+            return None
+
 
 @dataclasses.dataclass
 class Args:
@@ -101,103 +139,115 @@ def main(args: Args) -> None:
     sock.listen(1)
     print(f"Server is listening on {args.server_ip}:{args.server_port}")
 
-    while True:
-        conn, addr = sock.accept()
-        print(f"Connection from {addr}")
-        master_queue = deque(maxlen=100)
-        try:
-            while True:
-                size_buf = conn.recv(4)
-                if not size_buf:
-                    raise ConnectionError("client disconnected")
-                data_size = struct.unpack('<L', size_buf)[0]
-                data = recv_all(conn, data_size)
-                if data is None:
-                    raise ConnectionError("client disconnected during payload")
-                action_data = json.loads(data.decode('utf8'))
 
-                left_agent_data = action_data['follow1_pos'] # (state_history_size + 1, 7)
-                right_agent_data = action_data['follow2_pos'] # (state_history_size + 1, 7)
-
-                image1 = read_img(conn)  # left
-                image2 = read_img(conn)  # front
-                image3 = read_img(conn)  # right
-
-                h, w, c = np.array(image1).shape
-                camera_front = np.array(image2).reshape(h, w, c)
-                camera_left = np.array(image1).reshape(h, w, c)
-                camera_right = np.array(image3).reshape(h, w, c)
-
-                state = np.zeros((state_seq_len, 32), dtype=np.float32)
-                slave_state = np.concatenate([left_agent_data, right_agent_data], axis=1) # (state_history_size + 1, 14)
-                slave_state = np.concatenate([slave_state] + [slave_state[-1:]] * args.state_future_size)
-
-                if not master_queue:
-                    if mode == "smw2smw":
-                        master_queue.extend([np.concatenate([slave_state[-1], [0]])] * max(state_seq_len, latency_len))
-                    else:
-                        master_queue.extend([slave_state[-1]] * max(state_seq_len, latency_len))
-
-                master_list = list(master_queue)[-latency_len:]
-                if args.latency_step < args.state_future_size:  # inpainting mode
-                    master_list = master_list + [master_list[-1]] * (args.state_future_size - args.latency_step)
-                    state[args.latency_step - args.state_future_size:, -1] = 1.0
-                else:  # naive async
-                    master_list = master_list[:state_seq_len]
-                master_state = np.array(master_list)
-
-                if args.policy_mode in ["s2s", "s2m"]:
-                    state[:, :14] = slave_state
-                else:
-                    state[:, :14 + master_dim] = np.concatenate([slave_state, master_state], axis=1)
-                
-                if args.only_right_arm:
-                    mean = np.asarray(norm_stats["state"].mean)
-                    state[:, 0:7] = mean[..., 0:7]
-                    if args.policy_mode in ["sm2m", "sm2sm"]:
-                        state[:, 14:21] = mean[..., 14:21]
-
-                obs = {
-                    'images': {
-                        'left_wrist_view': camera_left,
-                        'face_view': camera_front,
-                        'right_wrist_view': camera_right,
-                    },
-                    'prompt': '',
-                    'state': state,
-                }
-                action_pred = policy.infer(obs)
-                action_pred = action_pred['actions']
-                if args.policy_mode in ["sm2sm", "smw2smw"]:
-                    _, master_action = action_pred[:, :14], action_pred[:, 14:14+master_dim]
-                    action_pred = master_action
-                if args.policy_mode == "smw2smw":
-                    print(f"predict weight: {action_pred[0, 14]}")
-
-                action_pred = action_pred[args.latency_step:]
-                action_pred = action_pred[:args.move_steps, ...]  # (move_steps, 14)
-                action_pred = np.concatenate([[master_queue[-1]], action_pred])
-                for action in action_pred[1:]:
-                    master_queue.append(action)
-
-                follow1_pos = action_pred[:, :7].tolist()
-                follow2_pos = action_pred[:, 7:14].tolist()
-
-                data_dir ={
-                    "follow1_pos":follow1_pos,
-                    "follow2_pos":follow2_pos,
-                }
-                data_str = json.dumps(data_dir)
-                data_bytes = data_str.encode('utf-8')
-                conn.sendall(struct.pack('<L', len(data_bytes)))
-                conn.sendall(data_bytes)
-        except (ConnectionError, ConnectionResetError, BrokenPipeError) as exc:
-            logging.info(f"Client disconnected: {exc}. Waiting for next connection.")
-        finally:
+    # 初始化键盘监听器
+    with KeyboardListener() as kb_listener:
+        while True:
+            conn, addr = sock.accept()
+            print(f"Connection from {addr}")
+            master_queue = deque(maxlen=100)
             try:
-                conn.close()
-            except OSError:
-                pass
+                while True:
+                    size_buf = conn.recv(4)
+                    if not size_buf:
+                        raise ConnectionError("client disconnected")
+                    data_size = struct.unpack('<L', size_buf)[0]
+                    data = recv_all(conn, data_size)
+                    if data is None:
+                        raise ConnectionError("client disconnected during payload")
+                    action_data = json.loads(data.decode('utf8'))
+
+                    left_agent_data = action_data['follow1_pos'] # (state_history_size + 1, 7)
+                    right_agent_data = action_data['follow2_pos'] # (state_history_size + 1, 7)
+
+                    image1 = read_img(conn)  # left
+                    image2 = read_img(conn)  # front
+                    image3 = read_img(conn)  # right
+
+                    h, w, c = np.array(image1).shape
+                    camera_front = np.array(image2).reshape(h, w, c)
+                    camera_left = np.array(image1).reshape(h, w, c)
+                    camera_right = np.array(image3).reshape(h, w, c)
+
+                    state = np.zeros((state_seq_len, 32), dtype=np.float32)
+                    slave_state = np.concatenate([left_agent_data, right_agent_data], axis=1) # (state_history_size + 1, 14)
+                    slave_state = np.concatenate([slave_state] + [slave_state[-1:]] * args.state_future_size)
+
+                    if not master_queue:
+                        if mode == "smw2smw":
+                            master_queue.extend([np.concatenate([slave_state[-1], [0]])] * max(state_seq_len, latency_len))
+                        else:
+                            master_queue.extend([slave_state[-1]] * max(state_seq_len, latency_len))
+
+                    master_list = list(master_queue)[-latency_len:]
+                    if args.latency_step < args.state_future_size:  # inpainting mode
+                        master_list = master_list + [master_list[-1]] * (args.state_future_size - args.latency_step)
+                        state[args.latency_step - args.state_future_size:, -1] = 1.0
+                    else:  # naive async
+                        master_list = master_list[:state_seq_len]
+                    master_state = np.array(master_list)
+
+                    if args.policy_mode in ["s2s", "s2m"]:
+                        state[:, :14] = slave_state
+                    else:
+                        state[:, :14 + master_dim] = np.concatenate([slave_state, master_state], axis=1)
+
+                    # 新增：键盘输入控制 state[:, 28]
+                    key = kb_listener.get_key()
+                    if key == '1':
+                        state[:, 28] = 1.0
+                        logging.info("Keyboard input: Set state[:, 28] = 1.0")
+                    elif key == '2':
+                        state[:, 28] = 2.0
+                        logging.info("Keyboard input: Set state[:, 28] = 2.0")
+
+                    if args.only_right_arm:
+                        mean = np.asarray(norm_stats["state"].mean)
+                        state[:, 0:7] = mean[..., 0:7]
+                        if args.policy_mode in ["sm2m", "sm2sm"]:
+                            state[:, 14:21] = mean[..., 14:21]
+
+                    obs = {
+                        'images': {
+                            'left_wrist_view': camera_left,
+                            'face_view': camera_front,
+                            'right_wrist_view': camera_right,
+                        },
+                        'prompt': '',
+                        'state': state,
+                    }
+                    action_pred = policy.infer(obs)
+                    action_pred = action_pred['actions']
+                    if args.policy_mode in ["sm2sm", "smw2smw"]:
+                        _, master_action = action_pred[:, :14], action_pred[:, 14:14+master_dim]
+                        action_pred = master_action
+                    if args.policy_mode == "smw2smw":
+                        print(f"predict weight: {action_pred[0, 14]}")
+
+                    action_pred = action_pred[args.latency_step:]
+                    action_pred = action_pred[:args.move_steps, ...]  # (move_steps, 14)
+                    action_pred = np.concatenate([[master_queue[-1]], action_pred])
+                    for action in action_pred[1:]:
+                        master_queue.append(action)
+
+                    follow1_pos = action_pred[:, :7].tolist()
+                    follow2_pos = action_pred[:, 7:14].tolist()
+
+                    data_dir ={
+                        "follow1_pos":follow1_pos,
+                        "follow2_pos":follow2_pos,
+                    }
+                    data_str = json.dumps(data_dir)
+                    data_bytes = data_str.encode('utf-8')
+                    conn.sendall(struct.pack('<L', len(data_bytes)))
+                    conn.sendall(data_bytes)
+            except (ConnectionError, ConnectionResetError, BrokenPipeError) as exc:
+                logging.info(f"Client disconnected: {exc}. Waiting for next connection.")
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":
