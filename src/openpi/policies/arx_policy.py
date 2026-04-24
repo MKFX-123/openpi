@@ -106,7 +106,7 @@ class ArxInputs(transforms.DataTransformFn):
                 inputs["actions"][..., 21:24] += pos_offset
         
         if self.only_right_obs:
-            inputs["image_mask"]["base_0_rgb"] = np.False_
+            #inputs["image_mask"]["base_0_rgb"] = np.False_
             inputs["image_mask"]["left_wrist_0_rgb"] = np.False_
             if self.slave_state_dim == 14:  # (left + right) x (pos + rot + gripper)
                 inputs["state"][..., :7] = 0.

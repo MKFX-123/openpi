@@ -1730,6 +1730,50 @@ _CONFIGS = [
         
         exp_name="pipeline_0422_sm2sm_h9f8oro_a20_dm10dh50df90po20_acc12",
     ),
+
+        TrainConfig(
+        name="pipeline_0422_0423",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pipeline_0423,pipeline_0422", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=9,
+            state_future_size=8,
+            only_right_obs=True,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.90,
+            random_pos_offset=0.020,
+            scaler=1.2,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pipeline_0422_0423_sm2sm_h9f8oro_a20_dm10dh50df90po20_acc12",
+    ),
+    
+        TrainConfig(
+        name="pipeline_all",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pipeline_0423,pipeline_0422,pipeline_0121,pipeline_0120", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=9,
+            state_future_size=8,
+            only_right_obs=True,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.90,
+            random_pos_offset=0.020,
+            #scaler=1.2,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pipeline_all_sm2sm_h9f8oro_a20_dm10dh50df90po20_noacc",
+    ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
