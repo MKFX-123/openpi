@@ -145,7 +145,6 @@ def main(args: Args) -> None:
         print(f"Connection from {addr}")
         master_queue = deque(maxlen=100)
         # Weight classifier state — reset per connection
-        wc_frame_buf = deque(maxlen=_wc_W_in)  # ring buffer of 14-dim feature vectors
         wc_locked_class = 0   # 0=empty, 1=heavy, 2=light; hard-latched after grasp
         wc_prev_holding = False
         try:
@@ -189,13 +188,6 @@ def main(args: Args) -> None:
                     master_list = master_list[:state_seq_len]
                 master_state = np.array(master_list)
 
-                # Capture current 14-dim right-arm feature for weight classifier
-                _wc_feat = np.concatenate([
-                    slave_state[args.state_history_size, 7:14].astype(np.float32),   # follow_right
-                    master_state[args.state_history_size, 7:14].astype(np.float32),  # master_right
-                ])
-                wc_frame_buf.append(_wc_feat)
-
                 if args.policy_mode in ["s2s", "s2m"]:
                     state[:, :14] = slave_state
                 else:
@@ -226,10 +218,10 @@ def main(args: Args) -> None:
                     vla_holding = vla_weight > 0.5
                     if vla_holding and not wc_prev_holding:
                         # Rising edge: grasp detected — run classifier once and hard-latch
-                        _buf = list(wc_frame_buf)
-                        _win = np.zeros((_wc_W_in, 14), dtype=np.float32)
-                        for _i, _f in enumerate(_buf):
-                            _win[_wc_W_in - len(_buf) + _i] = _f
+                        # Build window from current VLA call's state (shape: [T, 14])
+                        _wc_slave  = slave_state[:args.state_history_size + 1, 7:14].astype(np.float32)
+                        _wc_master = master_state[:args.state_history_size + 1, 7:14].astype(np.float32)
+                        _win = np.concatenate([_wc_slave, _wc_master], axis=1)[:_wc_W_in]  # (W_in, 14)
                         _win_n = (_win - wc_mean) / (wc_std + 1e-8)
                         with torch.no_grad():
                             _logits = wc_model(torch.from_numpy(_win_n[None]))
