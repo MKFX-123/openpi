@@ -60,7 +60,7 @@ def read_img(conn):
 
 
 class _WeightMLP(nn.Module):
-    """3-class streaming weight classifier: 0=empty, 1=heavy, 2=light. Input: [B, W_in, 14]."""
+    """3-class weight classifier: 0=empty, 1=heavy, 2=light. Input shape: [B, W_in, 14]."""
     def __init__(self, W_in: int = 10, feature_dim: int = 14, hidden_dim: int = 256, n_out: int = 3):
         super().__init__()
         in_dim = W_in * feature_dim
@@ -91,7 +91,7 @@ def main(args: Args) -> None:
                 break
         if args.policy_mode is None:
             raise ValueError(f"Could not detect policy_mode from path: {args.policy_dir}. Please specify --policy-mode")
-    
+
     # Load config params if not specified
     cfg = _config.get_config(args.policy_config)
     if args.state_history_size is None:
@@ -109,18 +109,18 @@ def main(args: Args) -> None:
     if args.server_ip is None:
         args.server_ip = os.getenv("OPENPI_SERVER_IP", "0.0.0.0")
         logging.info(f"Using server_ip: {args.server_ip}")
-    
+
     # Load policy
     logging.info(f"Loading policy from {args.policy_dir}")
     policy = _policy_config.create_trained_policy(cfg, args.policy_dir)
     norm_stats = _load_norm_stats(args.policy_config, args.policy_dir)
 
-    # Load 3-class streaming weight classifier (14-dim, 0=empty / 1=heavy / 2=light)
+    # Load 3-class weight classifier (14-dim, 0=empty / 1=heavy / 2=light)
     logging.info(f"Loading weight classifier from {args.weight_cls_ckpt}")
     _wc_ckpt = torch.load(args.weight_cls_ckpt, map_location="cpu", weights_only=False)
     _wc_args = _wc_ckpt["args"]
     _wc_W_in = int(_wc_args["W_in"])
-    _wc_n_out = int(list(_wc_ckpt["model_state"].values())[-1].shape[0])  # auto-detect 2 or 3
+    _wc_n_out = int(list(_wc_ckpt["model_state"].values())[-1].shape[0])  # auto-detect from checkpoint
     wc_model = _WeightMLP(
         W_in=_wc_W_in, feature_dim=14,
         hidden_dim=int(_wc_args.get("hidden_dim", 256)),
@@ -136,7 +136,7 @@ def main(args: Args) -> None:
     latency_len = args.state_history_size + 1 + args.latency_step
     master_queue = deque(maxlen=100)  # queue_len * 14
     master_dim = 15 if mode == "smw2smw" else 14
-    
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setblocking(True) #设置通信是阻塞式
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -149,9 +149,7 @@ def main(args: Args) -> None:
         print(f"Connection from {addr}")
         master_queue = deque(maxlen=100)
         # Weight classifier state — reset per connection
-        wc_frame_buf = deque(maxlen=_wc_W_in)  # ring buffer of 14-dim feature vectors
         wc_locked_class = 0   # 0=empty, 1=heavy, 2=light; hard-latched after grasp
-        # wc_prev_holding is no longer used; self-detected via model output
         try:
             while True:
                 size_buf = conn.recv(4)
@@ -193,18 +191,11 @@ def main(args: Args) -> None:
                     master_list = master_list[:state_seq_len]
                 master_state = np.array(master_list)
 
-                # Capture current 14-dim right-arm feature for weight classifier
-                _wc_feat = np.concatenate([
-                    slave_state[args.state_history_size, 7:14].astype(np.float32),   # follow_right
-                    master_state[args.state_history_size, 7:14].astype(np.float32),  # master_right
-                ])
-                wc_frame_buf.append(_wc_feat)
-
                 if args.policy_mode in ["s2s", "s2m"]:
                     state[:, :14] = slave_state
                 else:
                     state[:, :14 + master_dim] = np.concatenate([slave_state, master_state], axis=1)
-                
+
                 if args.only_right_arm:
                     mean = np.asarray(norm_stats["state"].mean)
                     state[:, 0:7] = mean[..., 0:7]
@@ -225,11 +216,11 @@ def main(args: Args) -> None:
                 if args.policy_mode in ["sm2sm", "smw2smw"]:
                     _, master_action = action_pred[:, :14], action_pred[:, 14:14+master_dim]
                     action_pred = master_action
-                # Run weight classifier every frame (3-class: 0=empty, 1=heavy, 2=light)
-                _buf = list(wc_frame_buf)
-                _win = np.zeros((_wc_W_in, 14), dtype=np.float32)
-                for _i, _f in enumerate(_buf):
-                    _win[_wc_W_in - len(_buf) + _i] = _f
+
+                # Run 3-class weight classifier every VLA call
+                _wc_slave  = slave_state[:args.state_history_size + 1, 7:14].astype(np.float32)
+                _wc_master = master_state[:args.state_history_size + 1, 7:14].astype(np.float32)
+                _win = np.concatenate([_wc_slave, _wc_master], axis=1)[:_wc_W_in]  # (W_in, 14)
                 _win_n = (_win - wc_mean) / (wc_std + 1e-8)
                 with torch.no_grad():
                     _raw_pred = int(wc_model(torch.from_numpy(_win_n[None])).argmax(1).item())
@@ -245,8 +236,7 @@ def main(args: Args) -> None:
                 if args.policy_mode == "smw2smw":
                     vla_weight = float(action_pred[0, 14])
                     if vla_weight < 0.5:
-                        # VLA says empty hand — unlock
-                        wc_locked_class = 0
+                        wc_locked_class = 0  # VLA says empty hand — unlock
                     print(f"predict weight: {vla_weight:.3f}  wc_raw={_raw_pred}  locked={wc_locked_class}")
                 else:
                     print(f"wc_raw={_raw_pred}  locked={wc_locked_class}")
