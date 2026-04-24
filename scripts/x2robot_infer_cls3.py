@@ -121,7 +121,7 @@ def main(args: Args) -> None:
     _wc_args = _wc_ckpt["args"]
     _wc_W_in = int(_wc_args["W_in"])
     _wc_n_out = int(list(_wc_ckpt["model_state"].values())[-1].shape[0])  # auto-detect 2 or 3
-    wc_model _WeightMLP(
+    wc_model = _WeightMLP(
         W_in=_wc_W_in, feature_dim=14,
         hidden_dim=int(_wc_args.get("hidden_dim", 256)),
         n_out=_wc_n_out,
