@@ -1774,6 +1774,46 @@ _CONFIGS = [
         
         exp_name="pipeline_all_sm2sm_h9f8oro_a20_dm10dh50df90po20_noacc",
     ),
+    TrainConfig(
+        name="foldclothes_0317_0318_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="foldclothes_0317_0318_sm2sm", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=9,
+            state_future_size=8,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.90,
+            random_pos_offset=0.020,
+            scaler=1.8,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="foldclothes_0317_0318_sm2sm_h9f8_a20_s18",
+    ),
+        TrainConfig(
+        name="fold_towel_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="foldclothes_0317_0318_sm2sm",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=2,
+            # only_right_obs=True,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.50,
+            random_pos_offset=0.020,
+            scaler=4,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=32,
+        exp_name="fold_towel_sm2sm_h3f2_a20_dm10dh50df50po20_acc40",
+    ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
