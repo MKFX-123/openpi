@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -584,6 +585,16 @@ class VelocityDebiasDataConfig(DataConfigFactory):
 
     支持直接从本地 HDF5 文件加载数据，无需转换为 LeRobot 格式。
 
+    使用方式：
+        data=VelocityDebiasDataConfig(
+            hdf5_base_dir="/mnt/public3/datasets/debiased/microwave/trajectory_chunks",
+            repo_id="microwave_1218,microwave_0109,microwave_0325,microwave_0327",
+        )
+
+    路径规则：
+        完整路径 = {hdf5_base_dir}/{repo_id_item}
+        例如：/mnt/public3/datasets/debiased/microwave/trajectory_chunks/microwave_1218
+
     HDF5 文件结构要求：
         - action_chunks: (N, 30, 14) - 动作序列
         - face_images: (N, 3, 224, 224) - 正面相机图像
@@ -593,11 +604,11 @@ class VelocityDebiasDataConfig(DataConfigFactory):
         - frame_indices: (N,) - 帧索引
     """
 
-    # 设置默认 repo_id，避免 tyro 要求用户提供
-    repo_id: str = "velocity_debias_hdf5"
+    # HDF5 数据集的基础目录（所有数据集的父目录）
+    hdf5_base_dir: str = "/mnt/public3/datasets/debiased/microwave/trajectory_chunks"
 
-    # HDF5 文件目录列表
-    hdf5_data_dirs: list[str] = dataclasses.field(default_factory=list)
+    # 数据集标识符（逗号分隔），相对于 hdf5_base_dir 的子目录名
+    repo_id: str = tyro.MISSING
 
     # 验证集比例
     hdf5_val_ratio: float = 0.1
@@ -636,6 +647,19 @@ class VelocityDebiasDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # 解析 repo_id 为完整的 HDF5 数据目录路径
+        repo_id_items = [item.strip() for item in self.repo_id.split(",") if item.strip()]
+
+        if not repo_id_items:
+            raise ValueError(f"repo_id cannot be empty. Please provide at least one dataset identifier.")
+
+        # 构建完整路径：hdf5_base_dir + repo_id_item
+        hdf5_data_dirs = [os.path.join(self.hdf5_base_dir, item) for item in repo_id_items]
+
+        logging.info(f"VelocityDebiasDataConfig: base_dir={self.hdf5_base_dir}")
+        logging.info(f"VelocityDebiasDataConfig: repo_id={self.repo_id}")
+        logging.info(f"VelocityDebiasDataConfig: resolved paths={hdf5_data_dirs}")
+
         # 复用 LeRobotX2robotDataConfig 的数据变换逻辑
         data_transforms = _transforms.Group(
             inputs=[arx_policy.ArxInputs(
@@ -690,12 +714,11 @@ class VelocityDebiasDataConfig(DataConfigFactory):
 
         return dataclasses.replace(
             base_config,
-            #norm_stats=None,  # 显式设置归一化统计为 None
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             state_history_size=self.state_history_size,
             state_future_size=self.state_future_size,
-            hdf5_data_dirs=self.hdf5_data_dirs,
+            hdf5_data_dirs=hdf5_data_dirs,  # 使用解析后的完整路径列表
             hdf5_val_ratio=self.hdf5_val_ratio,
             hdf5_camera_mapping=self.hdf5_camera_mapping,
         )
@@ -1650,52 +1673,6 @@ _CONFIGS = [
     ),
     
     TrainConfig(
-        name="microwave_all",
-        model=pi0_config.Pi0Config(action_horizon=30),
-        data=LeRobotX2robotDataConfig(
-            repo_id="microwave_all_s2m", # Multiple datasets separated by comma
-            mode="s2m",
-            only_right_obs=False,
-            action_dim=14,
-            #scaler=2,
-        ),
-        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        exp_name="microwave_all_s2m_a30",
-    ),
-    TrainConfig(
-        name="microwave_all_debiased",
-        model=pi0_config.Pi0Config(action_horizon=30),
-        data=VelocityDebiasDataConfig(
-            hdf5_data_dirs=[
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_1218",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0325",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0327",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0109",
-            ],
-            mode="s2m",
-            action_dim=14,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        exp_name="microwave_all_debiased_s2m_a30",
-    ),
-    TrainConfig(
-        name="microwave_all_debiased_norm",
-        model=pi0_config.Pi0Config(action_horizon=30),
-        data=VelocityDebiasDataConfig(
-            hdf5_data_dirs=[
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_1218",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0325",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0327",
-                "/mnt/public/jzc/debiased/epoch15/trajectory_chunks/microwave_0109",
-            ],
-            mode="s2m",
-            action_dim=14,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        exp_name="microwave_all_debiased_norm_s2m_a30",
-    ),
-    TrainConfig(
         name="microwave_scale",
         model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
@@ -1769,7 +1746,7 @@ _CONFIGS = [
             random_pos_offset=0.020,
             #scaler=1.2,
         ),
-        batch_size=16,
+        batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
         exp_name="pipeline_all_sm2sm_h9f8oro_a20_dm10dh50df90po20_noacc",
@@ -1794,25 +1771,62 @@ _CONFIGS = [
         
         exp_name="foldclothes_0317_0318_sm2sm_h9f8_a20_s18",
     ),
-        TrainConfig(
-        name="fold_towel_sm2sm",
+    TrainConfig(
+        name="foldtowel_sm2sm",
         model=pi0_config.Pi0Config(action_horizon=20),
         data=LeRobotX2robotDataConfig(
-            repo_id="foldclothes_0317_0318_sm2sm",
+            repo_id="foldtowel_0317_sm2sm,foldtowel_0318_sm2sm", # Multiple datasets separated by comma
             mode="sm2sm",
-            state_history_size=3,
-            state_future_size=2,
+            state_history_size=5,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.50,
+            random_pos_offset=0.020,
+            scaler=1.6,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=32,
+        exp_name="foldtowel_0317_0318_sm2sm_h5f3_a20_acc16",
+    ),
+    TrainConfig(
+        name="microwave_debiased",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=VelocityDebiasDataConfig(
+            hdf5_base_dir="/mnt/public3/datasets/debiased/microwave/trajectory_chunks",
+            repo_id="microwave_1218,microwave_0109,microwave_0325,microwave_0327",
+            mode="sm2sm",
+            state_history_size=5,
+            state_future_size=3,
             # only_right_obs=True,
             action_dim=28,
             random_drop_master=0.10,
             random_drop_history=0.50,
             random_drop_future=0.50,
             random_pos_offset=0.020,
-            scaler=4,
         ),
+        batch_size=16,
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        batch_size=32,
-        exp_name="fold_towel_sm2sm_h3f2_a20_dm10dh50df50po20_acc40",
+        exp_name="microwave_1218_0109_0325_0327_debiased_sm2sm_h5f3_a30",
+    ),
+    TrainConfig(
+        name="microwave_undebiased",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="microwave_1218_sm2sm, microwave_0109_sm2sm, microwave_0325_sm2sm, microwave_0327_sm2sm",
+            mode="sm2sm",
+            state_history_size=5,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.50,
+            random_drop_future=0.50,
+            random_pos_offset=0.020,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="microwave_1218_0109_0325_0327_sm2sm_h5f3_a30",
     ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),

@@ -766,15 +766,10 @@ def create_torch_dataset(
         - 每个数据集独立划分训练/验证集
     """
     repo_id = data_config.repo_id
-    if repo_id is None:
-        raise ValueError("Repo ID is not set. Cannot create dataset.")
-    if repo_id == "fake":
-        # 特殊标识：返回虚拟数据集
-        return FakeDataset(model_config, num_samples=1024)
 
-    # 检查是否为 HDF5 数据集配置
-    if repo_id == "velocity_debias_hdf5":
-        hdf5_data_dirs = getattr(data_config, 'hdf5_data_dirs', None)
+    # 优先检查 HDF5 数据集（移除对特定 repo_id 的依赖）
+    hdf5_data_dirs = getattr(data_config, 'hdf5_data_dirs', None)
+    if hdf5_data_dirs is not None:
         if not hdf5_data_dirs:
             raise ValueError("HDF5 data directories not specified in config")
 
@@ -790,6 +785,12 @@ def create_torch_dataset(
             val_ratio=hdf5_val_ratio,
             split_seed=split_seed,
         )
+
+    if repo_id is None:
+        raise ValueError("Repo ID is not set. Cannot create dataset.")
+    if repo_id == "fake":
+        # 特殊标识：返回虚拟数据集
+        return FakeDataset(model_config, num_samples=1024)
 
     # 获取状态序列配置（可选）
     state_history_size = getattr(data_config, 'state_history_size', 0)
