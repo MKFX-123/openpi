@@ -38,11 +38,18 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "microwave_1218+0109+0124raw_sm2sm_debug_ttyfix"
+REPO_NAME = "pour_tea_chengdu_20260601-20260605_sm2sm"
 RAW_DATASET_PATHS = [
-    './datasets/x2robot/microwave_1218/',
-    './datasets/x2robot/microwave_0109/',
-    './datasets/microwave_0124_labled/',
+    './datasets/pour_tea/chengdu_huangdandan_20260601_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260602_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260603_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260604_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260605_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260601_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260602_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260603_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260604_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260605_pm/',
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -388,6 +395,8 @@ def main(
     if debug:
         episode_paths = episode_paths[:debug_episodes]
         print(f"Debug mode: only processing first {debug_episodes} episodes")
+
+    episode_failures: dict[int, list[str]] = {}
     
     target_size = (320, 240) if low_resolution else (640, 480)
     shape = (target_size[1], target_size[0], 3)  # (H, W, C)
@@ -466,12 +475,53 @@ def main(
                     episode_frame_counts[ep_idx][camera_name] = num_frames
                 except Exception as e:
                     ep_path, ep_idx, camera = futures[future]
-                    print(f"Error transcoding episode {ep_idx} camera {camera}: {e}")
-                    raise
+                    error_summary = "\n".join(str(e).splitlines()[-8:])
+                    episode_failures.setdefault(ep_idx, []).append(
+                        f"{camera} transcode failed: {error_summary}"
+                    )
+                    print(
+                        f"\nSkipping episode {ep_idx} after transcode error "
+                        f"({camera}): {ep_path}\n{error_summary}\n"
+                    )
                 pbar.update(1)
     
     t_transcode_end = time.time()
     print(f"Transcoding completed in {t_transcode_end - t_transcode_start:.2f}s")
+
+    skipped_episode_indices = sorted(episode_failures)
+    successful_episode_indices = [
+        ep_idx for ep_idx in range(len(episode_paths))
+        if ep_idx not in episode_failures
+    ]
+
+    for ep_idx in skipped_episode_indices:
+        for camera_name in FILE_CAMERA_MAPPING:
+            path = output_path / "videos" / "chunk-000" / camera_name / f"episode_{ep_idx:06d}.mp4"
+            if path.exists():
+                path.unlink()
+
+    for new_idx, old_idx in enumerate(successful_episode_indices):
+        if new_idx == old_idx:
+            continue
+        for camera_name in FILE_CAMERA_MAPPING:
+            src = output_path / "videos" / "chunk-000" / camera_name / f"episode_{old_idx:06d}.mp4"
+            dst = output_path / "videos" / "chunk-000" / camera_name / f"episode_{new_idx:06d}.mp4"
+            if src.exists():
+                if dst.exists():
+                    dst.unlink()
+                src.rename(dst)
+
+    processed_episode_paths = [episode_paths[ep_idx] for ep_idx in successful_episode_indices]
+
+    if skipped_episode_indices:
+        print(f"Skipped {len(skipped_episode_indices)} episodes:")
+        for ep_idx in skipped_episode_indices:
+            print(f"  [{ep_idx}] {episode_paths[ep_idx]}")
+            for reason in episode_failures[ep_idx]:
+                print(f"      - {reason}")
+
+    if not processed_episode_paths:
+        raise RuntimeError("No valid episodes left after transcoding.")
     
     # ========================================
     # PHASE 2: Build Dataset (metadata only)
@@ -487,7 +537,11 @@ def main(
     import datasets
     datasets.disable_progress_bars()
     
-    for ep_idx, ep_path in tqdm.tqdm(enumerate(episode_paths), total=len(episode_paths), desc="Building dataset"):
+    for ep_idx, ep_path in tqdm.tqdm(
+        enumerate(processed_episode_paths),
+        total=len(processed_episode_paths),
+        desc="Building dataset",
+    ):
         state_array, action_array = load_json_data(ep_path)
         num_frames = len(state_array)
         
@@ -529,11 +583,13 @@ def main(
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
-    print(f"  Episodes processed: {len(episode_paths)}")
+    print(f"  Episodes found:     {len(episode_paths)}")
+    print(f"  Episodes processed: {len(processed_episode_paths)}")
+    print(f"  Episodes skipped:   {len(skipped_episode_indices)}")
     print(f"  Phase 1 (transcode): {t_transcode_end - t_transcode_start:.2f}s")
     print(f"  Phase 2 (build):     {t_build_end - t_build_start:.2f}s")
     print(f"  Total:               {total_time:.2f}s")
-    print(f"  Average per episode: {total_time/len(episode_paths):.2f}s")
+    print(f"  Average per episode: {total_time/len(processed_episode_paths):.2f}s")
     print(f"{'='*60}")
     print(f"Dataset saved at {output_path}")
     
