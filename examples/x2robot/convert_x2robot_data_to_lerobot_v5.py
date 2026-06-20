@@ -193,7 +193,21 @@ def transcode_video_ffmpeg(
     ]
     
     probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+    if probe_result.returncode != 0 or not probe_result.stdout.strip():
+        raise RuntimeError(f"ffprobe failed for {output_path}: {probe_result.stderr}")
     num_frames = int(probe_result.stdout.strip())
+
+    decode_check_cmd = [
+        "ffmpeg", "-v", "error",
+        "-xerror",
+        "-nostdin",
+        "-i", str(output_path),
+        "-f", "null",
+        "-"
+    ]
+    decode_check_result = subprocess.run(decode_check_cmd, capture_output=True, text=True)
+    if decode_check_result.returncode != 0 or decode_check_result.stderr.strip():
+        raise RuntimeError(f"ffmpeg decode check failed for {output_path}: {decode_check_result.stderr}")
     
     return num_frames
 

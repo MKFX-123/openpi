@@ -117,7 +117,18 @@ class FilteredLeRobotDataset(lerobot_dataset.LeRobotDataset):
         because video files are named using the original episode indices.
         """
         # Do NOT remap ep_idx here - video files use original episode indices
-        return super()._query_videos(query_timestamps, ep_idx)
+        try:
+            return super()._query_videos(query_timestamps, ep_idx)
+        except Exception as e:
+            video_paths = {
+                key: str(self.root / self.meta.get_video_file_path(ep_idx, key))
+                for key in self.meta.video_keys
+            }
+            raise RuntimeError(
+                "Video decode failed. "
+                f"repo_id={self.repo_id}, ep_idx={ep_idx}, "
+                f"query_timestamps={query_timestamps}, video_paths={video_paths}"
+            ) from e
 
 
 class MultiDataset(Dataset[T_co]):
