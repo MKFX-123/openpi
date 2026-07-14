@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import cv2
@@ -42,6 +44,9 @@ class EpisodeSpec:
     phase_labels: dict[str, str] | None = None
 
 
+VIDEO_FILENAMES = ("leftImg.mp4", "faceImg.mp4", "rightImg.mp4")
+
+
 def source_indices_for_target_frames(
     source_frame_count: int,
     source_fps: float,
@@ -58,6 +63,52 @@ def phase_ids_for_indices(frame_indices: np.ndarray, phase_boundaries: tuple[int
     boundaries = np.asarray(phase_boundaries, dtype=np.int64)
     phase_ids = np.searchsorted(boundaries, frame_indices, side="right") - 1
     return np.clip(phase_ids, 0, len(boundaries) - 1).astype(np.float32)
+
+
+def load_episode_metadata(episode_path: Path) -> tuple[int, float]:
+    episode_json_path = episode_path / f"{episode_path.name}.json"
+    with episode_json_path.open("r", encoding="utf-8") as f:
+        header = f.read(4096)
+    total_match = re.search(r'"total"\s*:\s*(\d+)', header)
+    fps_match = re.search(r'"fps"\s*:\s*([0-9.]+)', header)
+    if total_match is not None and fps_match is not None:
+        total_frames = int(total_match.group(1))
+        source_fps = float(fps_match.group(1))
+    else:
+        payload = json.loads(episode_json_path.read_text(encoding="utf-8"))
+        total_frames = int(payload.get("total", len(payload["data"])))
+        source_fps = float(payload.get("fps", 30.0))
+    if total_frames < 2:
+        raise ValueError(f"episode has too few frames: {total_frames}")
+    if source_fps <= 0:
+        raise ValueError(f"invalid source fps: {source_fps}")
+    return total_frames, source_fps
+
+
+def load_phase_boundaries(
+    annotation_path: Path,
+    total_frames: int,
+    ordered_key_frame_specs: list[list[Any]],
+) -> tuple[int, ...]:
+    annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
+    boundaries = []
+    for spec in ordered_key_frame_specs:
+        if not isinstance(spec, list | tuple) or len(spec) != 2:
+            raise ValueError(f"invalid ordered key frame spec: {spec!r}")
+        key, index = str(spec[0]), int(spec[1])
+        values = annotation.get(key)
+        if not isinstance(values, list) or len(values) <= index:
+            raise ValueError(f"missing key frame: {key}[{index}]")
+        try:
+            frame_index = round(float(values[index]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid key frame: {key}[{index}]={values[index]!r}") from exc
+        boundaries.append(min(max(frame_index, 0), total_frames - 1))
+    if not boundaries:
+        raise ValueError("ordered_key_frame_specs is empty")
+    if any(left > right for left, right in itertools.pairwise(boundaries)):
+        raise ValueError(f"key frames are not monotonic: {boundaries}")
+    return tuple(boundaries)
 
 
 def build_robot_parts(frame_data: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
@@ -291,43 +342,79 @@ def discover_episodes(
     val_ratio: float,
     split_seed: int,
 ) -> list[EpisodeSpec]:
-    path_by_name = {
-        path.name: path
-        for dataset_dir in dataset_dirs
-        for path in dataset_dir.iterdir()
-        if path.is_dir() and list(path.glob("*.mp4"))
-    }
-    specs: list[EpisodeSpec] = []
     metadata_entries = datasets_metadata.get("datasets", [])
     if not metadata_entries:
         raise ValueError("Checkpoint has no LeRobot dataset metadata")
+    if len(metadata_entries) == 1:
+        dataset_groups = [(metadata_entries[0], dataset_dirs)]
+    elif len(metadata_entries) == len(dataset_dirs):
+        dataset_groups = [(dataset, [dataset_dir]) for dataset, dataset_dir in zip(metadata_entries, dataset_dirs, strict=True)]
+    else:
+        raise ValueError(
+            "For multi-dataset checkpoints, pass one --dataset-dir entry per metadata dataset in the same order"
+        )
 
-    for dataset_index, dataset in enumerate(metadata_entries):
+    specs: list[EpisodeSpec] = []
+    for dataset_index, (dataset, group_dirs) in enumerate(dataset_groups):
+        episode_paths = sorted(
+            path
+            for dataset_dir in group_dirs
+            for path in dataset_dir.iterdir()
+            if path.is_dir()
+            and (path / f"{path.name}.json").is_file()
+            and all((path / filename).is_file() for filename in VIDEO_FILENAMES)
+        )
         key_state = dataset.get("key_state")
         if key_state:
-            records = key_state["episodes"]
             dataset_specs = []
-            for record in records:
-                episode_name = Path(record["source_path"]).name
-                if episode_name not in path_by_name:
-                    logging.warning("Training episode not found under dataset-dir: %s", episode_name)
+            annotation_relative_path = Path(key_state["annotation_relative_path"])
+            fallback_value = key_state.get("fallback_annotation_relative_path")
+            fallback_relative_path = Path(fallback_value) if fallback_value else None
+            ordered_key_frame_specs = key_state["ordered_key_frame_specs"]
+            skipped_missing_annotation = 0
+            skipped_invalid_annotation = 0
+            for episode_path in episode_paths:
+                annotation_path = episode_path / annotation_relative_path
+                if not annotation_path.is_file() and fallback_relative_path is not None:
+                    annotation_path = episode_path / fallback_relative_path
+                if not annotation_path.is_file():
+                    skipped_missing_annotation += 1
+                    continue
+                try:
+                    total_frames, source_fps = load_episode_metadata(episode_path)
+                    phase_boundaries = load_phase_boundaries(
+                        annotation_path,
+                        total_frames,
+                        ordered_key_frame_specs,
+                    )
+                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    skipped_invalid_annotation += 1
+                    logging.warning("Skipping episode %s: %s", episode_path.name, exc)
                     continue
                 dataset_specs.append(
                     EpisodeSpec(
-                        path=path_by_name[episode_name],
+                        path=episode_path,
                         repo_id=dataset["repo_id"],
                         target_fps=float(dataset["fps"]),
-                        source_fps=float(record["source_fps"]),
-                        phase_boundaries=tuple(record["phase_boundaries"]),
+                        source_fps=source_fps,
+                        phase_boundaries=phase_boundaries,
                         phase_dim_index=int(key_state["phase_dim_index"]),
                         base_sm2sm_dim=int(key_state["base_sm2sm_dim"]),
                         phase_labels=key_state.get("phase_labels"),
                     )
                 )
+            logging.info(
+                "Dataset %s: skipped %d episodes without %s%s and %d with invalid annotations",
+                dataset["repo_id"],
+                skipped_missing_annotation,
+                annotation_relative_path,
+                f" or {fallback_relative_path}" if fallback_relative_path is not None else "",
+                skipped_invalid_annotation,
+            )
         else:
             dataset_specs = [
                 EpisodeSpec(path=path, repo_id=dataset["repo_id"], target_fps=float(dataset["fps"]))
-                for path in sorted(path_by_name.values())
+                for path in episode_paths
             ]
 
         if split:
