@@ -477,6 +477,7 @@ def create_data_loader(
     split: Literal["train", "val"] | None = None,
     val_ratio: float = 0.1,
     split_seed: int = 42,
+    training: bool = True,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -490,8 +491,13 @@ def create_data_loader(
         split: If "train" or "val", only load that split. If None, load all data.
         val_ratio: Ratio of validation data (default 0.1 means 10% validation).
         split_seed: Random seed for reproducible train/val splitting.
+        training: Whether to enable training-only data transforms such as augmentation.
     """
-    data_config = config.data.create(config.assets_dirs, config.model)
+    data_config = (
+        config.data.create_for_training(config.assets_dirs, config.model)
+        if training
+        else config.data.create(config.assets_dirs, config.model)
+    )
     logging.info(f"data_config: {data_config}")
 
     if data_config.rlds_data_dir is not None:

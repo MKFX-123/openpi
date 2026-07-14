@@ -43,6 +43,7 @@ import wandb
 import openpi.models.pi0_config
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
+import openpi.training.checkpoint_metadata as _checkpoint_metadata
 import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
@@ -181,6 +182,8 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
             _normalize.save(tmp_ckpt_dir / "assets" / data_config.asset_id, norm_stats)
+
+        _checkpoint_metadata.save(tmp_ckpt_dir / "metadata", config)
 
         # Atomically move temp directory to final location
         if final_ckpt_dir.exists():

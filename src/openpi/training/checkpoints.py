@@ -13,6 +13,8 @@ import orbax.checkpoint.future as future
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
+import openpi.training.checkpoint_metadata as _checkpoint_metadata
+import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
@@ -40,6 +42,7 @@ def initialize_checkpoint_dir(
     # Configure item handlers based on save_full_state parameter
     item_handlers = {
         "assets": CallbackHandler(),
+        "metadata": CallbackHandler(),
         "params": ocp.PyTreeCheckpointHandler(),
     }
     if save_full_state:
@@ -70,7 +73,9 @@ def save_state(
     checkpoint_manager: ocp.CheckpointManager,
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
+    config: _config.TrainConfig,
     step: int,
+    *,
     save_full_state: bool = True,
 ):
     def save_assets(directory: epath.Path):
@@ -80,11 +85,15 @@ def save_state(
         if norm_stats is not None and data_config.asset_id is not None:
             _normalize.save(directory / data_config.asset_id, norm_stats)
 
+    def save_metadata(directory: epath.Path):
+        _checkpoint_metadata.save(directory, config)
+
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
         train_state, params = _split_params(state)
     items = {
         "assets": save_assets,
+        "metadata": save_metadata,
         "params": {"params": params},
     }
     if save_full_state:

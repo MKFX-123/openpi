@@ -263,6 +263,7 @@ def main(config: _config.TrainConfig):
             sharding=data_sharding,
             shuffle=True,
             split="val",
+            training=False,
         )
         val_iter = iter(val_loader)  # Create persistent validation iterator
         logging.info(f"Initialized validation data loader")
@@ -334,7 +335,14 @@ def main(config: _config.TrainConfig):
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step, save_full_state=config.save_full_state)
+            _checkpoints.save_state(
+                checkpoint_manager,
+                train_state,
+                data_loader,
+                config,
+                step,
+                save_full_state=config.save_full_state,
+            )
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

@@ -170,6 +170,10 @@ class DataConfigFactory(abc.ABC):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         """Create a data config."""
 
+    def create_for_training(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        """Create a data config with training-only behavior enabled."""
+        return self.create(assets_dirs, model_config)
+
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
         asset_id = self.assets.asset_id or repo_id.replace(',', '_') if repo_id is not None else None
@@ -264,7 +268,26 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return self._create(assets_dirs, model_config, enable_augmentation=False)
+
+    @override
+    def create_for_training(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return self._create(assets_dirs, model_config, enable_augmentation=True)
+
+    def _create(
+        self,
+        assets_dirs: pathlib.Path,
+        model_config: _model.BaseModelConfig,
+        *,
+        enable_augmentation: bool,
+    ) -> DataConfig:
         assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm", "smw2smw"], f"Invalid mode: {self.mode}"
+
+        random_drop_master = self.random_drop_master if enable_augmentation else 0.0
+        random_drop_history = self.random_drop_history if enable_augmentation else 0.0
+        random_drop_future = self.random_drop_future if enable_augmentation else 0.0
+        random_drop_label = self.random_drop_label if enable_augmentation else 0.0
+        random_pos_offset = self.random_pos_offset if enable_augmentation else 0.0
 
         data_transforms = _transforms.Group(
             inputs=[arx_policy.ArxInputs(
@@ -275,12 +298,12 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 state_future_size=self.state_future_size,
                 slave_state_dim=self.slave_state_dim,
                 mask_history_slave_states=self.mask_history_slave_states,
-                random_drop_master=self.random_drop_master,
-                random_drop_history=self.random_drop_history,
-                random_drop_future=self.random_drop_future,
-                random_drop_label=self.random_drop_label,
+                random_drop_master=random_drop_master,
+                random_drop_history=random_drop_history,
+                random_drop_future=random_drop_future,
+                random_drop_label=random_drop_label,
                 random_drop_label_global=self.random_drop_label_global,
-                random_pos_offset=self.random_pos_offset,
+                random_pos_offset=random_pos_offset,
                 only_right_obs=self.only_right_obs,
                 mask_left_obs=self.mask_left_obs,
             )],
@@ -299,7 +322,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         base_config = self.create_base_config(assets_dirs, model_config)
         
         # Fix zero-variance dimensions in norm_stats if configured
-        if base_config.norm_stats is not None and (self.random_drop_master > 0. or self.random_drop_future > 0.):
+        if base_config.norm_stats is not None and (random_drop_master > 0. or random_drop_future > 0.):
             import numpy as np
     
             norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
