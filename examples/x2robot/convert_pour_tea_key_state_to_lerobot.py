@@ -341,7 +341,7 @@ def main(
     low_resolution: bool = True,
     num_workers: int = 10,
     target_fps: int = 20,
-    video_codec: str = "av1",
+    video_codec: str = "h264",
     overwrite: bool = False,
 ) -> None:
     datasets.disable_progress_bars()

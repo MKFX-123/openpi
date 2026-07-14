@@ -5,6 +5,9 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import dataclasses
+
+import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import tqdm
 import tyro
@@ -21,6 +24,31 @@ class RemoveStrings(transforms.DataTransformFn):
         return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
 
 
+class InjectDummyVideos(transforms.DataTransformFn):
+    def __init__(self, video_keys: set[str]):
+        self._video_keys = video_keys
+
+    def __call__(self, x: dict) -> dict:
+        for key in self._video_keys:
+            x[key] = np.zeros((1, 1, 3), dtype=np.uint8)
+        return x
+
+
+def disable_video_loading(dataset: _data_loader.Dataset) -> set[str]:
+    """Remove video features in memory since norm stats only use state and actions."""
+    if isinstance(dataset, lerobot_dataset.LeRobotDataset):
+        video_keys = set(dataset.meta.video_keys)
+        dataset.meta.info["features"] = {
+            key: feature for key, feature in dataset.meta.features.items() if key not in video_keys
+        }
+        return video_keys
+    if isinstance(dataset, _data_loader.TransformedDataset):
+        return disable_video_loading(dataset._dataset)  # noqa: SLF001
+    if isinstance(dataset, _data_loader.MultiDataset):
+        return set().union(*(disable_video_loading(item) for item in dataset._datasets))  # noqa: SLF001
+    return set()
+
+
 def create_torch_dataloader(
     data_config: _config.DataConfig,
     action_horizon: int,
@@ -32,9 +60,11 @@ def create_torch_dataloader(
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
     dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    video_keys = disable_video_loading(dataset)
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
+            InjectDummyVideos(video_keys),
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
@@ -86,8 +116,17 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(
+    config_name: str,
+    max_frames: int | None = None,
+    repo_id: str | None = None,
+    action_horizon: int | None = None,
+):
     config = _config.get_config(config_name)
+    if repo_id is not None:
+        config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
+    if action_horizon is not None:
+        config = dataclasses.replace(config, model=dataclasses.replace(config.model, action_horizon=action_horizon))
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -110,10 +149,7 @@ def main(config_name: str, max_frames: int | None = None):
 
     # For multi-dataset, concatenate dataset names with underscores
     repo_ids = [repo_id.strip() for repo_id in data_config.repo_id.split(",") if repo_id.strip()]
-    if len(repo_ids) > 1:
-        asset_name = "_".join(repo_ids)
-    else:
-        asset_name = data_config.repo_id
+    asset_name = "_".join(repo_ids) if len(repo_ids) > 1 else data_config.repo_id
 
     output_path = config.assets_dirs / asset_name
     print(f"Writing stats to: {output_path}")
