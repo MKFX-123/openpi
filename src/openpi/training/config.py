@@ -1370,6 +1370,23 @@ _CONFIGS = [
         exp_name="pourtea_sm2sm_h3f3oro_a20_dm10dh30po20",
     ),
     TrainConfig(
+        name="table_clean_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="table_clean_x1pro_sm2sm_15hz",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=32,
+        exp_name="table_clean_sm2sm_15hz_h3f3oro_a30_dm10dh30po20",
+    ),
+    TrainConfig(
         name="pourtea_key_state_sm2sm",
         model=pi0_config.Pi0Config(action_horizon=20),
         data=LeRobotX2robotDataConfig(
