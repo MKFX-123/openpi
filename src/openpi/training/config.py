@@ -299,7 +299,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         base_config = self.create_base_config(assets_dirs, model_config)
         
         # Fix zero-variance dimensions in norm_stats if configured
-        if self.random_drop_master > 0. or self.random_drop_future > 0.:
+        if base_config.norm_stats is not None and (self.random_drop_master > 0. or self.random_drop_future > 0.):
             import numpy as np
     
             norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
@@ -1328,6 +1328,40 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
         exp_name="plugusb_0119+0120+0121_sm2sm_jr_h9oro_a20_dm10dh30",
+    ),
+    TrainConfig(
+        name="pourtea_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_chengdu_20260601-20260605_sm2sm", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pourtea_sm2sm_h3f3oro_a20_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="pourtea_key_state_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_key_state_sm2sm",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+
+        exp_name="pourtea_key_state_sm2sm_h3f3oro_a20_dm10dh30po20",
     ),
     TrainConfig(
         name="pipeline_s2s",
