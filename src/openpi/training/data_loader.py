@@ -186,6 +186,69 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
 
 
+class SameTaskActionChunkDataset(Dataset[T_co]):
+    """Filters samples whose future action chunk crosses a task boundary.
+
+    LeRobot stores a scalar task index at the current frame while OpenPI loads
+    a future action sequence. Without this filter, samples immediately before
+    a frame-level task transition pair the old prompt with actions from the new
+    task. Episode-end padding is intentionally left unchanged.
+    """
+
+    def __init__(self, dataset: Dataset[T_co], action_horizon: int):
+        if action_horizon < 1:
+            raise ValueError(f"action_horizon must be positive, got {action_horizon}")
+        hf_dataset = getattr(dataset, "hf_dataset", None)
+        if hf_dataset is None:
+            raise TypeError("SameTaskActionChunkDataset requires a LeRobot dataset with hf_dataset")
+        if "task_index" not in hf_dataset.column_names:
+            raise ValueError("LeRobot dataset has no task_index column")
+        if "episode_index" not in hf_dataset.column_names:
+            raise ValueError("LeRobot dataset has no episode_index column")
+
+        task_indices = self._int_column(hf_dataset["task_index"])
+        episode_indices = self._int_column(hf_dataset["episode_index"])
+        if task_indices.shape != episode_indices.shape:
+            raise ValueError(
+                f"task_index/episode_index length mismatch: {task_indices.shape} vs {episode_indices.shape}"
+            )
+
+        keep = np.ones(len(task_indices), dtype=bool)
+        task_boundaries = np.flatnonzero(
+            (episode_indices[1:] == episode_indices[:-1])
+            & (task_indices[1:] != task_indices[:-1])
+        ) + 1
+        for boundary in task_boundaries:
+            first = max(0, int(boundary) - action_horizon + 1)
+            candidates = np.arange(first, boundary, dtype=np.int64)
+            same_episode = episode_indices[candidates] == episode_indices[boundary]
+            keep[candidates[same_episode]] = False
+
+        self._dataset = dataset
+        self._indices = np.flatnonzero(keep)
+        self.total_samples = len(task_indices)
+        self.filtered_samples = self.total_samples - len(self._indices)
+
+    @staticmethod
+    def _int_column(values) -> np.ndarray:
+        return np.fromiter(
+            (int(value.item()) if hasattr(value, "item") else int(value) for value in values),
+            dtype=np.int64,
+            count=len(values),
+        )
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        mapped_index = index.__index__()
+        if mapped_index < 0:
+            mapped_index += len(self)
+        if mapped_index < 0 or mapped_index >= len(self):
+            raise IndexError(f"Index {index} is out of range for dataset of length {len(self)}")
+        return self._dataset[int(self._indices[mapped_index])]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -329,6 +392,14 @@ def create_torch_dataset(
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
 
+        if data_config.filter_cross_task_action_chunks:
+            dataset = SameTaskActionChunkDataset(dataset, action_horizon)
+            logging.info(
+                "Filtered %d/%d samples whose action chunks cross task boundaries",
+                dataset.filtered_samples,
+                dataset.total_samples,
+            )
+
         if data_config.prompt_from_task:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
@@ -381,6 +452,15 @@ def create_torch_dataset(
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
         
+        if data_config.filter_cross_task_action_chunks:
+            dataset = SameTaskActionChunkDataset(dataset, action_horizon)
+            logging.info(
+                "Filtered %d/%d samples from %s whose action chunks cross task boundaries",
+                dataset.filtered_samples,
+                dataset.total_samples,
+                repo_id,
+            )
+
         if data_config.prompt_from_task:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
             

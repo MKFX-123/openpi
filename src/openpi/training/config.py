@@ -89,6 +89,10 @@ class DataConfig:
     action_sequence_keys: Sequence[str] = ("actions",)
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # If true, remove training samples whose future action chunk crosses a
+    # frame-level LeRobot task boundary. This keeps one language prompt aligned
+    # with every action in the supervised chunk.
+    filter_cross_task_action_chunks: bool = False
     state_history_size: int = 0
     state_future_size: int = 0
 
@@ -1368,6 +1372,25 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
         exp_name="pourtea_sm2sm_h3f3oro_a20_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="pourtea_subtask_prompt_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_subtask_prompt_sm2sm_15hz",
+            base_config=DataConfig(filter_cross_task_action_chunks=True),
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"
+        ),
+        exp_name="pourtea_subtask_prompt_sm2sm_15hz_h3f3oro_a20_dm10dh30po20",
     ),
     TrainConfig(
         name="table_clean_sm2sm",

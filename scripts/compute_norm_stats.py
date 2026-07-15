@@ -44,6 +44,8 @@ def disable_video_loading(dataset: _data_loader.Dataset) -> set[str]:
         return video_keys
     if isinstance(dataset, _data_loader.TransformedDataset):
         return disable_video_loading(dataset._dataset)  # noqa: SLF001
+    if isinstance(dataset, _data_loader.SameTaskActionChunkDataset):
+        return disable_video_loading(dataset._dataset)  # noqa: SLF001
     if isinstance(dataset, _data_loader.MultiDataset):
         return set().union(*(disable_video_loading(item) for item in dataset._datasets))  # noqa: SLF001
     return set()
@@ -121,21 +123,30 @@ def main(
     max_frames: int | None = None,
     repo_id: str | None = None,
     action_horizon: int | None = None,
+    batch_size: int | None = None,
 ):
     config = _config.get_config(config_name)
     if repo_id is not None:
         config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
     if action_horizon is not None:
         config = dataclasses.replace(config, model=dataclasses.replace(config.model, action_horizon=action_horizon))
+    stats_batch_size = batch_size or config.batch_size
+    if stats_batch_size < 1:
+        raise ValueError(f"batch_size must be positive, got {stats_batch_size}")
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
         data_loader, num_batches = create_rlds_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, max_frames
+            data_config, config.model.action_horizon, stats_batch_size, max_frames
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+            data_config,
+            config.model.action_horizon,
+            stats_batch_size,
+            config.model,
+            config.num_workers,
+            max_frames,
         )
 
     keys = ["state", "actions"]
