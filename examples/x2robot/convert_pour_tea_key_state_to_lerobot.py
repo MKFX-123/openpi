@@ -40,6 +40,7 @@ from examples.x2robot.convert_x2robot_data_to_lerobot_v5 import (
 
 DEFAULT_DATASET_ROOT = Path("/mnt/public3/datasets/x1pro/pour_tea_training")
 DEFAULT_ANNOTATION_RELATIVE_PATH = Path("anno/subtask_gemini+heuristic.json")
+DEFAULT_PROMPT_RELATIVE_PATH = Path("anno/prompt.txt")
 DEFAULT_REPO_NAME = "pour_tea_x1pro_key_state_sm2sm"
 
 ORDERED_KEY_FRAME_SPECS = [
@@ -77,6 +78,7 @@ AUGMENTED_DIM = BASE_STATE_DIM + 1
 class EpisodeRecord:
     path: Path
     key_frame_path: Path
+    prompt: str
     phase_boundaries: list[int]
     total_frames: int
     source_fps: float
@@ -232,12 +234,14 @@ def load_json_data_with_phase(
 def discover_episodes(
     dataset_root: Path,
     annotation_relative_path: Path,
+    prompt_relative_path: Path,
     fallback_annotation_relative_path: Path | None = None,
 ) -> tuple[list[EpisodeRecord], list[tuple[Path, str]]]:
     episode_records: list[EpisodeRecord] = []
     skipped: list[tuple[Path, str]] = []
 
     for episode_path in get_episode_dirs(dataset_root):
+        prompt_path = episode_path / prompt_relative_path
         primary_key_frame_path = episode_path / annotation_relative_path
         fallback_key_frame_path = (
             episode_path / fallback_annotation_relative_path
@@ -262,18 +266,25 @@ def discover_episodes(
                 annotation_candidates.append(str(fallback_annotation_relative_path))
             skipped.append((episode_path, f"missing annotation: {', '.join(annotation_candidates)}"))
             continue
+        if not prompt_path.is_file():
+            skipped.append((episode_path, f"missing prompt: {prompt_relative_path}"))
+            continue
 
         try:
             total_frames, source_fps = get_episode_metadata(get_episode_json_path(episode_path))
             phase_boundaries = load_phase_boundaries(key_frame_path, total_frames)
+            prompt = prompt_path.read_text(encoding="utf-8").strip()
+            if not prompt:
+                raise ValueError("prompt is empty")
         except Exception as exc:
-            skipped.append((episode_path, f"invalid annotation/json: {exc}"))
+            skipped.append((episode_path, f"invalid annotation/json/prompt: {exc}"))
             continue
 
         episode_records.append(
             EpisodeRecord(
                 path=episode_path,
                 key_frame_path=key_frame_path,
+                prompt=prompt,
                 phase_boundaries=phase_boundaries,
                 total_frames=total_frames,
                 source_fps=source_fps,
@@ -287,6 +298,7 @@ def write_phase_metadata(
     output_path: Path,
     dataset_root: Path,
     annotation_relative_path: Path,
+    prompt_relative_path: Path,
     fallback_annotation_relative_path: Path | None,
     target_fps: int,
     records: list[EpisodeRecord],
@@ -300,6 +312,7 @@ def write_phase_metadata(
         "augmented_dim": AUGMENTED_DIM,
         "source_dataset_root": str(dataset_root),
         "annotation_relative_path": str(annotation_relative_path),
+        "prompt_relative_path": str(prompt_relative_path),
         "fallback_annotation_relative_path": (
             str(fallback_annotation_relative_path) if fallback_annotation_relative_path is not None else None
         ),
@@ -311,6 +324,7 @@ def write_phase_metadata(
                 "episode_index": idx,
                 "source_path": str(record.path),
                 "annotation_path": str(record.key_frame_path),
+                "prompt": record.prompt,
                 "total_frames": record.total_frames,
                 "source_fps": record.source_fps,
                 "phase_boundaries": record.phase_boundaries,
@@ -332,6 +346,7 @@ def main(
     dataset_root: Path = DEFAULT_DATASET_ROOT,
     repo_name: str = DEFAULT_REPO_NAME,
     annotation_relative_path: Path = DEFAULT_ANNOTATION_RELATIVE_PATH,
+    prompt_relative_path: Path = DEFAULT_PROMPT_RELATIVE_PATH,
     fallback_annotation_relative_path: Path | None = None,
     *,
     push_to_hub: bool = False,
@@ -353,6 +368,7 @@ def main(
     print(f"HF_LEROBOT_HOME: {HF_LEROBOT_HOME}")
     print(f"Dataset root: {dataset_root}")
     print(f"Annotation: {annotation_relative_path}")
+    print(f"Prompt: {prompt_relative_path}")
     if fallback_annotation_relative_path is not None:
         print(f"Fallback annotation: {fallback_annotation_relative_path}")
     print(f"Video codec: {video_codec}")
@@ -369,6 +385,7 @@ def main(
     records, skipped_before_transcode = discover_episodes(
         dataset_root,
         annotation_relative_path,
+        prompt_relative_path,
         fallback_annotation_relative_path,
     )
     total_valid_records = len(records)
@@ -525,7 +542,7 @@ def main(
                     "right_wrist_view": dummy_image,
                     "state": state_array[frame_idx],
                     "actions": action_array[frame_idx + 1],
-                    "task": "",
+                    "task": record.prompt,
                 }
             )
 
@@ -541,6 +558,7 @@ def main(
         output_path,
         dataset_root,
         annotation_relative_path,
+        prompt_relative_path,
         fallback_annotation_relative_path,
         target_fps,
         processed_records,
