@@ -249,7 +249,7 @@ def main(config: _config.TrainConfig):
         config,
         sharding=data_sharding,
         shuffle=True,
-        split="train",
+        split="train" if config.valid else None,
     )
     data_iter = iter(data_loader)
     batch = next(data_iter)
