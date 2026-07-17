@@ -285,7 +285,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         *,
         enable_augmentation: bool,
     ) -> DataConfig:
-        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm", "smw2smw"], f"Invalid mode: {self.mode}"
+        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm", "smp2smp"], f"Invalid mode: {self.mode}"
 
         random_drop_master = self.random_drop_master if enable_augmentation else 0.0
         random_drop_history = self.random_drop_history if enable_augmentation else 0.0
@@ -1489,27 +1489,6 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
         exp_name="pipeline_0120+0121+0422+0423_sm2sm_h9f4mlo_a30_dm10dh50df80po20",
-    ),
-    TrainConfig(
-        name="pipeline_smw2smw",
-        model=pi0_config.Pi0Config(action_horizon=30),
-        data=LeRobotX2robotDataConfig(
-            repo_id="pipeline_0422+0423_smw2smw", # Multiple datasets separated by comma
-            mode="smw2smw",
-            state_history_size=9,
-            state_future_size=4,
-            mask_left_obs=True,
-            action_dim=29,
-            random_drop_master=0.10,
-            random_drop_history=0.50,
-            random_drop_future=0.80,
-            random_pos_offset=0.020,
-            random_drop_label=0.5,
-            random_drop_label_global=True,
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        
-        exp_name="pipeline_0422+0423_smw2smw_h9f4mlo_a30_dm10dh50df80dlg50po20",
     ),
     TrainConfig(
         name="wipe_sm2sm",

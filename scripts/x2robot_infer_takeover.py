@@ -22,7 +22,7 @@ class Args:
     """Arguments for the serve_policy script."""
     policy_config: str = "throw_sm2m"
     policy_dir: str = "checkpoints/throw_sm2m/throw_0113_sm2m_h5f3/29999"
-    policy_mode: Literal["s2s", "s2m", "sm2m", "sm2sm", "smw2smw"] | None = None
+    policy_mode: Literal["s2s", "s2m", "sm2m", "sm2sm", "smp2smp"] | None = None
     log_replay: bool = False
     state_history_size: int = None
     state_future_size: int = None
@@ -58,7 +58,7 @@ def read_img(conn):
 def main(args: Args) -> None:
     # Auto-detect policy_mode from policy_dir if not specified
     if args.policy_mode is None:
-        for mode in ['smw2smw', 'sm2sm', 'sm2m', 's2m', 's2s']:
+        for mode in ['smp2smp', 'sm2sm', 'sm2m', 's2m', 's2s']:
             if mode in args.policy_dir.lower():
                 args.policy_mode = mode
                 logging.info(f"Auto-detected policy_mode from path: {args.policy_mode}")
@@ -92,7 +92,7 @@ def main(args: Args) -> None:
     state_seq_len = args.state_history_size + 1 + args.state_future_size
     latency_len = args.state_history_size + 1 + args.latency_step
     master_queue = deque(maxlen=100)  # queue_len * 14
-    master_dim = 15 if mode == "smw2smw" else 14
+    master_dim = 15 if mode == "smp2smp" else 14
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setblocking(True) #设置通信是阻塞式
@@ -133,7 +133,7 @@ def main(args: Args) -> None:
                 slave_state = np.concatenate([slave_state] + [slave_state[-1:]] * args.state_future_size)
 
                 if not master_queue:
-                    if mode == "smw2smw":
+                    if mode == "smp2smp":
                         master_queue.extend([np.concatenate([slave_state[-1], [0]])] * max(state_seq_len, latency_len))
                     else:
                         master_queue.extend([slave_state[-1]] * max(state_seq_len, latency_len))
@@ -168,10 +168,10 @@ def main(args: Args) -> None:
                 }
                 action_pred = policy.infer(obs)
                 action_pred = action_pred['actions']
-                if args.policy_mode in ["sm2sm", "smw2smw"]:
+                if args.policy_mode in ["sm2sm", "smp2smp"]:
                     _, master_action = action_pred[:, :14], action_pred[:, 14:14+master_dim]
                     action_pred = master_action
-                if args.policy_mode == "smw2smw":
+                if args.policy_mode == "smp2smp":
                     print(f"predict weight: {action_pred[0, 14]}")
 
                 action_pred = action_pred[args.latency_step:]

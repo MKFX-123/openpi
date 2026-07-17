@@ -151,7 +151,7 @@ def extract_eval_prediction(
     base_sm2sm_dim: int,
 ) -> np.ndarray:
     actions = np.asarray(actions)[:, :output_dim]
-    if policy_mode in {"sm2sm", "smw2smw"}:
+    if policy_mode in {"sm2sm", "smp2smp"}:
         robot_end = min(base_sm2sm_dim, output_dim)
         parts = [actions[:, slave_state_dim:robot_end]]
         if output_dim > base_sm2sm_dim:
