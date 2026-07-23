@@ -120,12 +120,18 @@ class ModelTransformFactory(GroupFactory):
             case _model.ModelType.PI0 | _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
                 discrete_state_input = model_config.discrete_state_input if model_config.pi05 else False
+                discrete_state_index = (
+                    model_config.state_sequence_current_index
+                    if model_config.pi05_state_sequence_in_suffix
+                    else None
+                )
                 input_transforms = [
                     _transforms.InjectDefaultPrompt(self.default_prompt),
                     _transforms.ResizeImages(224, 224),
                     _transforms.TokenizePrompt(
                         _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         discrete_state_input=discrete_state_input,
+                        discrete_state_index=discrete_state_index,
                     ),
                 ]
                 if model_config.state_sequence_length > 1:
@@ -325,10 +331,12 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         # Create base config and fix zero-variance dimensions if needed
         base_config = self.create_base_config(assets_dirs, model_config)
         
-        # Fix zero-variance dimensions in norm_stats if configured
-        if base_config.norm_stats is not None and (random_drop_master > 0. or random_drop_future > 0.):
+        # State-sequence policies reserve the last state dimension for a binary availability mask. Norm stats are
+        # computed from unmasked data, but both training augmentation and inference latency handling can set it to 1.
+        uses_state_mask = self.state_sequence_length > 1
+        if base_config.norm_stats is not None and uses_state_mask:
             import numpy as np
-    
+
             norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
             state_stats = norm_stats["state"]
             new_std = np.array(state_stats.std, copy=True)
@@ -336,15 +344,28 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
             if len(zero_var_indices) > 0:
                 new_std[zero_var_indices] = 1.0
                 logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
-                
-                # NormStats is a pydantic dataclass, recreate it
-                norm_stats["state"] = _normalize.NormStats(
-                    mean=state_stats.mean,
-                    std=new_std,
-                    q01=state_stats.q01,
-                    q99=state_stats.q99,
-                )
-                base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
+
+            q01 = None if state_stats.q01 is None else np.array(state_stats.q01, copy=True)
+            q99 = None if state_stats.q99 is None else np.array(state_stats.q99, copy=True)
+            if base_config.use_quantile_norm:
+                if q01 is None or q99 is None:
+                    raise ValueError("PI0.5 state sequence conditioning requires quantile norm statistics")
+                mask_index = model_config.action_dim - 1
+                if mask_index >= q01.shape[-1]:
+                    raise ValueError(
+                        f"Mask index {mask_index} is outside state norm stats with dimension {q01.shape[-1]}"
+                    )
+                q01[mask_index] = 0.0
+                q99[mask_index] = 1.0
+                logging.info(f"Set quantile range of state mask dimension {mask_index} to [0, 1]")
+
+            norm_stats["state"] = _normalize.NormStats(
+                mean=state_stats.mean,
+                std=new_std,
+                q01=q01,
+                q99=q99,
+            )
+            base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
 
         return dataclasses.replace(
             base_config,
@@ -694,18 +715,35 @@ class TrainConfig:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
         
-        # Auto-sync state_sequence_length from data to model
-        data_seq_len = getattr(self.data, 'state_sequence_length', 1)
-        model_seq_len = getattr(self.model, 'state_sequence_length', 1)
-        
+        # Auto-sync state sequence metadata from data to model.
+        data_seq_len = getattr(self.data, "state_sequence_length", 1)
+        model = self.model
+        model_seq_len = getattr(model, "state_sequence_length", 1)
+
         if data_seq_len > 1 and model_seq_len == 1:
-            new_model = dataclasses.replace(self.model, state_sequence_length=data_seq_len)
-            object.__setattr__(self, 'model', new_model)
-        elif model_seq_len != data_seq_len and model_seq_len != 1:
+            model = dataclasses.replace(model, state_sequence_length=data_seq_len)
+        elif model_seq_len not in (data_seq_len, 1):
             raise ValueError(
                 f"Mismatch: model.state_sequence_length={model_seq_len}, "
                 f"data.state_sequence_length={data_seq_len}"
             )
+
+        if isinstance(model, pi0_config.Pi0Config) and model.pi05_state_sequence_in_suffix:
+            if data_seq_len <= 1:
+                raise ValueError("PI0.5 suffix state conditioning requires a state sequence")
+            if not model.discrete_state_input:
+                raise ValueError("PI0.5 suffix state conditioning requires discrete_state_input=True")
+            current_index = getattr(self.data, "state_history_size", 0)
+            if model.state_sequence_current_index is None:
+                model = dataclasses.replace(model, state_sequence_current_index=current_index)
+            elif model.state_sequence_current_index != current_index:
+                raise ValueError(
+                    f"Mismatch: model.state_sequence_current_index={model.state_sequence_current_index}, "
+                    f"data.state_history_size={current_index}"
+                )
+
+        if model is not self.model:
+            object.__setattr__(self, "model", model)
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1408,6 +1446,30 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         batch_size=32,
         exp_name="table_clean_sm2sm_15hz_h3f3oro_a30_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="table_clean_pi05_sm2sm",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            pi05_state_sequence_in_suffix=True,
+        ),
+        data=LeRobotX2robotDataConfig(
+            repo_id="table_clean_x1pro_sm2sm_15hz_v2",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*(?:lora|state_sequence_proj).*",
+        ),
+        batch_size=32,
+        exp_name="table_clean_pi05_sm2sm_15hz_v2_h3f3oro_a30_dm10dh30po20",
     ),
     TrainConfig(
         name="pourtea_key_state_sm2sm",
