@@ -1,7 +1,9 @@
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
+from pathlib import Path
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -249,6 +251,94 @@ class SameTaskActionChunkDataset(Dataset[T_co]):
         return len(self._indices)
 
 
+class LeRobotSampleFilterDataset(Dataset[T_co]):
+    """Apply frame-window filters to a LeRobot dataset without modifying its rows."""
+
+    def __init__(
+        self,
+        dataset: Dataset[T_co],
+        *,
+        action_horizon: int,
+        state_history_size: int,
+        state_future_size: int,
+        state_step: int,
+        filter_cross_task_action_chunks: bool,
+        filter_issue_samples: bool,
+    ):
+        hf_dataset = getattr(dataset, "hf_dataset", None)
+        if hf_dataset is None:
+            raise TypeError("LeRobotSampleFilterDataset requires a LeRobot dataset with hf_dataset")
+        if "episode_index" not in hf_dataset.column_names:
+            raise ValueError("LeRobot dataset has no episode_index column")
+
+        episode_indices = SameTaskActionChunkDataset._int_column(hf_dataset["episode_index"])
+        keep = np.ones(len(episode_indices), dtype=bool)
+        self.task_filtered_samples = 0
+        self.issue_filtered_samples = 0
+
+        if filter_cross_task_action_chunks:
+            if "task_index" not in hf_dataset.column_names:
+                raise ValueError("LeRobot dataset has no task_index column")
+            task_indices = SameTaskActionChunkDataset._int_column(hf_dataset["task_index"])
+            task_keep = np.ones(len(task_indices), dtype=bool)
+            task_boundaries = np.flatnonzero(
+                (episode_indices[1:] == episode_indices[:-1])
+                & (task_indices[1:] != task_indices[:-1])
+            ) + 1
+            for boundary in task_boundaries:
+                first = max(0, int(boundary) - action_horizon + 1)
+                candidates = np.arange(first, boundary, dtype=np.int64)
+                same_episode = episode_indices[candidates] == episode_indices[boundary]
+                task_keep[candidates[same_episode]] = False
+            self.task_filtered_samples = int((~task_keep).sum())
+            keep &= task_keep
+
+        if filter_issue_samples:
+            if "frame_index" not in hf_dataset.column_names:
+                raise ValueError("LeRobot dataset has no frame_index column")
+            root = Path(str(getattr(dataset, "root")))
+            metadata_path = root / "meta" / "key_state" / "excluded_sample_ranges.json"
+            if not metadata_path.is_file():
+                raise FileNotFoundError(
+                    f"Issue sample filtering requested but metadata is missing: {metadata_path}"
+                )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            frame_indices = SameTaskActionChunkDataset._int_column(hf_dataset["frame_index"])
+            issue_keep = np.ones(len(frame_indices), dtype=bool)
+            min_delta = -state_history_size * state_step
+            max_delta = max(action_horizon - 1, state_future_size * state_step)
+
+            for episode in metadata.get("episodes", []):
+                episode_index = int(episode["episode_index"])
+                episode_mask = episode_indices == episode_index
+                for start, end in episode.get("sample_ranges", []):
+                    invalid_start = int(start) - max_delta
+                    invalid_end = int(end) - min_delta
+                    issue_keep[
+                        episode_mask
+                        & (frame_indices >= invalid_start)
+                        & (frame_indices < invalid_end)
+                    ] = False
+            self.issue_filtered_samples = int((~issue_keep).sum())
+            keep &= issue_keep
+
+        self._dataset = dataset
+        self._indices = np.flatnonzero(keep)
+        self.total_samples = len(keep)
+        self.filtered_samples = self.total_samples - len(self._indices)
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        mapped_index = index.__index__()
+        if mapped_index < 0:
+            mapped_index += len(self)
+        if mapped_index < 0 or mapped_index >= len(self):
+            raise IndexError(f"Index {index} is out of range for dataset of length {len(self)}")
+        return self._dataset[int(self._indices[mapped_index])]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -392,12 +482,22 @@ def create_torch_dataset(
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
 
-        if data_config.filter_cross_task_action_chunks:
-            dataset = SameTaskActionChunkDataset(dataset, action_horizon)
+        if data_config.filter_cross_task_action_chunks or data_config.filter_issue_samples:
+            dataset = LeRobotSampleFilterDataset(
+                dataset,
+                action_horizon=action_horizon,
+                state_history_size=state_history_size,
+                state_future_size=state_future_size,
+                state_step=state_step,
+                filter_cross_task_action_chunks=data_config.filter_cross_task_action_chunks,
+                filter_issue_samples=data_config.filter_issue_samples,
+            )
             logging.info(
-                "Filtered %d/%d samples whose action chunks cross task boundaries",
+                "Filtered %d/%d samples (task boundaries: %d, issue ranges: %d)",
                 dataset.filtered_samples,
                 dataset.total_samples,
+                dataset.task_filtered_samples,
+                dataset.issue_filtered_samples,
             )
 
         if data_config.prompt_from_task:
@@ -452,13 +552,23 @@ def create_torch_dataset(
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
         
-        if data_config.filter_cross_task_action_chunks:
-            dataset = SameTaskActionChunkDataset(dataset, action_horizon)
+        if data_config.filter_cross_task_action_chunks or data_config.filter_issue_samples:
+            dataset = LeRobotSampleFilterDataset(
+                dataset,
+                action_horizon=action_horizon,
+                state_history_size=state_history_size,
+                state_future_size=state_future_size,
+                state_step=state_step,
+                filter_cross_task_action_chunks=data_config.filter_cross_task_action_chunks,
+                filter_issue_samples=data_config.filter_issue_samples,
+            )
             logging.info(
-                "Filtered %d/%d samples from %s whose action chunks cross task boundaries",
+                "Filtered %d/%d samples from %s (task boundaries: %d, issue ranges: %d)",
                 dataset.filtered_samples,
                 dataset.total_samples,
                 repo_id,
+                dataset.task_filtered_samples,
+                dataset.issue_filtered_samples,
             )
 
         if data_config.prompt_from_task:

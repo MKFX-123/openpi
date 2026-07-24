@@ -41,6 +41,7 @@ from examples.x2robot.convert_x2robot_data_to_lerobot_v5 import (
 DEFAULT_DATASET_ROOT = Path("/mnt/public3/datasets/x1pro/pour_tea_training")
 DEFAULT_ANNOTATION_RELATIVE_PATH = Path("anno/subtask_gemini+heuristic.json")
 DEFAULT_PROMPT_RELATIVE_PATH = Path("anno/prompt.txt")
+DEFAULT_ISSUE_ANNOTATION_RELATIVE_PATH = Path("anno/pour_tea_issues_auto.json")
 DEFAULT_REPO_NAME = "pour_tea_x1pro_key_state_sm2sm"
 
 ORDERED_KEY_FRAME_SPECS = [
@@ -78,6 +79,7 @@ AUGMENTED_DIM = BASE_STATE_DIM + 1
 class EpisodeRecord:
     path: Path
     key_frame_path: Path
+    issue_ranges: list[tuple[int, int]]
     prompt: str
     phase_boundaries: list[int]
     total_frames: int
@@ -151,6 +153,57 @@ def phase_ids_for_indices(frame_indices: np.ndarray, phase_boundaries: list[int]
     boundaries = np.asarray(phase_boundaries, dtype=np.int64)
     phase_ids = np.searchsorted(boundaries, frame_indices, side="right") - 1
     return np.clip(phase_ids, 0, len(phase_boundaries) - 1).astype(np.float32)
+
+
+def load_issue_ranges(
+    issue_annotation_path: Path,
+    issue_label: str,
+    total_frames: int,
+) -> list[tuple[int, int]]:
+    if not issue_annotation_path.is_file():
+        return []
+    annotation = load_json(issue_annotation_path)
+    values = annotation.get(issue_label, [])
+    if not isinstance(values, list) or len(values) % 2 != 0:
+        raise ValueError(f"issue label {issue_label!r} must contain start/end pairs")
+
+    ranges = []
+    for index in range(0, len(values), 2):
+        start = min(max(int(round(float(values[index]))), 0), total_frames)
+        end = min(max(int(round(float(values[index + 1]))), 0), total_frames)
+        if start < end:
+            ranges.append((start, end))
+    return ranges
+
+
+def target_issue_ranges(
+    record: EpisodeRecord,
+    target_frame_count: int,
+    target_fps: int,
+) -> list[tuple[int, int]]:
+    """Map raw issue intervals to LeRobot rows, including each row's next-frame action."""
+    if not record.issue_ranges or target_frame_count < 2:
+        return []
+
+    source_indices = source_indices_for_target_frames(
+        target_frame_count,
+        record.total_frames,
+        record.source_fps,
+        target_fps,
+    )
+    bad_source_frames = np.zeros(record.total_frames, dtype=bool)
+    for start, end in record.issue_ranges:
+        bad_source_frames[start:end] = True
+
+    bad_rows = bad_source_frames[source_indices[:-1]] | bad_source_frames[source_indices[1:]]
+    changes = np.flatnonzero(bad_rows[1:] != bad_rows[:-1]) + 1
+    ranges: list[tuple[int, int]] = []
+    run_start = 0
+    for run_end in [*changes.tolist(), len(bad_rows)]:
+        if bad_rows[run_start]:
+            ranges.append((run_start, run_end))
+        run_start = run_end
+    return ranges
 
 
 def transcode_single_video_with_codec(
@@ -235,6 +288,8 @@ def discover_episodes(
     dataset_root: Path,
     annotation_relative_path: Path,
     prompt_relative_path: Path,
+    issue_annotation_relative_path: Path | None,
+    issue_label: str,
     fallback_annotation_relative_path: Path | None = None,
 ) -> tuple[list[EpisodeRecord], list[tuple[Path, str]]]:
     episode_records: list[EpisodeRecord] = []
@@ -273,6 +328,15 @@ def discover_episodes(
         try:
             total_frames, source_fps = get_episode_metadata(get_episode_json_path(episode_path))
             phase_boundaries = load_phase_boundaries(key_frame_path, total_frames)
+            issue_ranges = (
+                load_issue_ranges(
+                    episode_path / issue_annotation_relative_path,
+                    issue_label,
+                    total_frames,
+                )
+                if issue_annotation_relative_path is not None
+                else []
+            )
             prompt = prompt_path.read_text(encoding="utf-8").strip()
             if not prompt:
                 raise ValueError("prompt is empty")
@@ -284,6 +348,7 @@ def discover_episodes(
             EpisodeRecord(
                 path=episode_path,
                 key_frame_path=key_frame_path,
+                issue_ranges=issue_ranges,
                 prompt=prompt,
                 phase_boundaries=phase_boundaries,
                 total_frames=total_frames,
@@ -328,11 +393,51 @@ def write_phase_metadata(
                 "total_frames": record.total_frames,
                 "source_fps": record.source_fps,
                 "phase_boundaries": record.phase_boundaries,
+                "source_issue_ranges": record.issue_ranges,
             }
             for idx, record in enumerate(records)
         ],
     }
     with (metadata_dir / "phase_layout.json").open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+def write_issue_metadata(
+    output_path: Path,
+    issue_annotation_relative_path: Path | None,
+    issue_label: str,
+    target_fps: int,
+    records: list[EpisodeRecord],
+    video_frame_counts: list[int],
+) -> None:
+    metadata_dir = output_path / "meta" / "key_state"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    episodes = []
+    for episode_index, (record, frame_count) in enumerate(
+        zip(records, video_frame_counts, strict=True)
+    ):
+        episodes.append(
+            {
+                "episode_index": episode_index,
+                "source_episode": record.path.name,
+                "source_ranges": record.issue_ranges,
+                "sample_ranges": target_issue_ranges(record, frame_count, target_fps),
+            }
+        )
+
+    metadata = {
+        "format_version": 1,
+        "annotation_relative_path": (
+            str(issue_annotation_relative_path)
+            if issue_annotation_relative_path is not None
+            else None
+        ),
+        "issue_label": issue_label,
+        "target_fps": target_fps,
+        "range_semantics": "half_open",
+        "episodes": episodes,
+    }
+    with (metadata_dir / "excluded_sample_ranges.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
 
@@ -347,6 +452,8 @@ def main(
     repo_name: str = DEFAULT_REPO_NAME,
     annotation_relative_path: Path = DEFAULT_ANNOTATION_RELATIVE_PATH,
     prompt_relative_path: Path = DEFAULT_PROMPT_RELATIVE_PATH,
+    issue_annotation_relative_path: Path | None = DEFAULT_ISSUE_ANNOTATION_RELATIVE_PATH,
+    issue_label: str = "5",
     fallback_annotation_relative_path: Path | None = None,
     *,
     push_to_hub: bool = False,
@@ -369,6 +476,8 @@ def main(
     print(f"Dataset root: {dataset_root}")
     print(f"Annotation: {annotation_relative_path}")
     print(f"Prompt: {prompt_relative_path}")
+    print(f"Issue annotation: {issue_annotation_relative_path}")
+    print(f"Issue label: {issue_label}")
     if fallback_annotation_relative_path is not None:
         print(f"Fallback annotation: {fallback_annotation_relative_path}")
     print(f"Video codec: {video_codec}")
@@ -386,6 +495,8 @@ def main(
         dataset_root,
         annotation_relative_path,
         prompt_relative_path,
+        issue_annotation_relative_path,
+        issue_label,
         fallback_annotation_relative_path,
     )
     total_valid_records = len(records)
@@ -562,6 +673,14 @@ def main(
         fallback_annotation_relative_path,
         target_fps,
         processed_records,
+    )
+    write_issue_metadata(
+        output_path,
+        issue_annotation_relative_path,
+        issue_label,
+        target_fps,
+        processed_records,
+        processed_video_frame_counts,
     )
 
     total_seconds = time.time() - total_start

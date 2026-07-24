@@ -93,8 +93,12 @@ class DataConfig:
     # frame-level LeRobot task boundary. This keeps one language prompt aligned
     # with every action in the supervised chunk.
     filter_cross_task_action_chunks: bool = False
+    # If true, remove training samples whose state/action windows overlap ranges
+    # stored in meta/key_state/excluded_sample_ranges.json.
+    filter_issue_samples: bool = False
     state_history_size: int = 0
     state_future_size: int = 0
+    state_step: int = 1
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -251,6 +255,7 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     random_drop_label_global: bool = True
     only_right_obs: bool = False
     mask_left_obs: bool = False
+    filter_issue_samples: bool = False
    
     @property
     def state_sequence_length(self) -> int:
@@ -374,6 +379,8 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             state_history_size=self.state_history_size,
             state_future_size=self.state_future_size,
+            state_step=self.state_step,
+            filter_issue_samples=self.filter_issue_samples and enable_augmentation,
         )
 
 
