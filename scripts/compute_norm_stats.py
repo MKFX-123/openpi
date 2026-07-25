@@ -44,7 +44,7 @@ def disable_video_loading(dataset: _data_loader.Dataset) -> set[str]:
         return video_keys
     if isinstance(dataset, _data_loader.TransformedDataset):
         return disable_video_loading(dataset._dataset)  # noqa: SLF001
-    if isinstance(dataset, _data_loader.SameTaskActionChunkDataset):
+    if isinstance(dataset, _data_loader.LeRobotSampleFilterDataset):
         return disable_video_loading(dataset._dataset)  # noqa: SLF001
     if isinstance(dataset, _data_loader.MultiDataset):
         return set().union(*(disable_video_loading(item) for item in dataset._datasets))  # noqa: SLF001

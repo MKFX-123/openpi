@@ -94,7 +94,7 @@ class DataConfig:
     # with every action in the supervised chunk.
     filter_cross_task_action_chunks: bool = False
     # If true, remove training samples whose state/action windows overlap ranges
-    # stored in meta/key_state/excluded_sample_ranges.json.
+    # stored in meta/data_quality/excluded_sample_ranges.json.
     filter_issue_samples: bool = False
     state_history_size: int = 0
     state_future_size: int = 0
@@ -1514,6 +1514,33 @@ _CONFIGS = [
         batch_size=128,
         num_train_steps=40_000,
         exp_name="pourtea_smp2smp_human_15hz_v3_h3f3oro_a30_dm10dh30po20_bs128_steps40k",
+    ),
+    TrainConfig(
+        name="pourtea_pi05_smp2smp",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            pi05_state_sequence_in_suffix=True,
+        ),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_key_state_sm2sm_human_15hz_v5",
+            assets=AssetsConfig(assets_dir="assets/pourtea_smp2smp"),
+            mode="smp2smp",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+            filter_issue_samples=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*(?:lora|state_sequence_proj).*",
+        ),
+        batch_size=128,
+        num_train_steps=30_000,
+        exp_name="pourtea_pi05_smp2smp_human_15hz_v5_filtered_h3f3oro_a30_dm10dh30po20_bs128_steps30k",
     ),
     TrainConfig(
         name="pipeline_s2s",

@@ -142,7 +142,8 @@ class Normalize(DataTransformFn):
         assert stats.q01 is not None
         assert stats.q99 is not None
         q01, q99 = stats.q01[..., : x.shape[-1]], stats.q99[..., : x.shape[-1]]
-        return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        normalized = (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        return np.clip(normalized, -2.0, 2.0)
 
 
 @dataclasses.dataclass(frozen=True)

@@ -410,7 +410,7 @@ def write_issue_metadata(
     records: list[EpisodeRecord],
     video_frame_counts: list[int],
 ) -> None:
-    metadata_dir = output_path / "meta" / "key_state"
+    metadata_dir = output_path / "meta" / "data_quality"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     episodes = []
     for episode_index, (record, frame_count) in enumerate(
