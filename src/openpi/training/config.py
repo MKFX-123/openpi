@@ -1708,7 +1708,7 @@ _CONFIGS = [
         exp_name="pipeline_0422_sm2sm_h9f8oro_a20_dm10dh50df90po20_acc12",
     ),
 
-        TrainConfig(
+    TrainConfig(
         name="pipeline_0422_0423",
         model=pi0_config.Pi0Config(action_horizon=20),
         data=LeRobotX2robotDataConfig(
@@ -1730,7 +1730,7 @@ _CONFIGS = [
         exp_name="pipeline_0422_0423_sm2sm_h9f8oro_a20_dm10dh50df90po20_acc12",
     ),
     
-        TrainConfig(
+    TrainConfig(
         name="pipeline_all",
         model=pi0_config.Pi0Config(action_horizon=20),
         data=LeRobotX2robotDataConfig(
@@ -1784,11 +1784,11 @@ _CONFIGS = [
             random_drop_history=0.50,
             random_drop_future=0.50,
             random_pos_offset=0.020,
-            scaler=1.6,
+            scaler=3.0,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         batch_size=32,
-        exp_name="foldtowel_0317_0318_sm2sm_h5f3_a20_acc16",
+        exp_name="foldtowel_0317_0318_sm2sm_h5f3_a20_acc30",
     ),
     TrainConfig(
         name="microwave_debiased",
@@ -1797,8 +1797,8 @@ _CONFIGS = [
             hdf5_base_dir="/mnt/public3/datasets/debiased/microwave/trajectory_chunks",
             repo_id="microwave_1218,microwave_0109,microwave_0325,microwave_0327",
             mode="sm2sm",
-            state_history_size=5,
-            state_future_size=3,
+            # state_history_size=5,
+            # state_future_size=3,
             # only_right_obs=True,
             action_dim=28,
             random_drop_master=0.10,
@@ -1806,15 +1806,15 @@ _CONFIGS = [
             random_drop_future=0.50,
             random_pos_offset=0.020,
         ),
-        batch_size=16,
+        batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
-        exp_name="microwave_1218_0109_0325_0327_debiased_sm2sm_h5f3_a30",
+        exp_name="microwave_1218_0109_0325_0327_debiased_sm2sm_a30_bs32",
     ),
     TrainConfig(
         name="microwave_undebiased",
         model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
-            repo_id="microwave_1218_sm2sm, microwave_0109_sm2sm, microwave_0325_sm2sm, microwave_0327_sm2sm",
+            repo_id="microwave_1218_sm2sm,microwave_0109_sm2sm,microwave_0325_sm2sm,microwave_0327_sm2sm",
             mode="sm2sm",
             state_history_size=5,
             state_future_size=3,
@@ -1828,6 +1828,21 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         exp_name="microwave_1218_0109_0325_0327_sm2sm_h5f3_a30",
     ),
+    TrainConfig(
+        name="pick_plug_0602",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pick_plug_0602",
+            mode="sm2sm",
+            state_history_size=5,
+            state_future_size=3,
+            action_dim=28,
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        exp_name="pick_plug_0602_sm2sm_h5f3_a30",
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
