@@ -548,10 +548,9 @@ def main(config: _config.TrainConfig):
     # 创建训练数据加载器 [内部]
     data_loader = _data_loader.create_data_loader(
         config,
-        sharding=data_sharding,    # 数据分片策略，实现数据在设备间的自动分发。
-        shuffle=True,              # 打乱数据
-        split="train",             # 训练集
-        skip_norm_stats=skip_norm_stats,  # 如果没有归一化统计则跳过检查
+        sharding=data_sharding,
+        shuffle=True,
+        split="train" if config.valid else None,
     )
     data_iter = iter(data_loader) #获取对象的迭代器
     batch = next(data_iter)       #获取迭代器的下一个元素
@@ -567,8 +566,8 @@ def main(config: _config.TrainConfig):
             config,
             sharding=data_sharding,
             shuffle=True,
-            split="val",  # 验证集
-            skip_norm_stats=skip_norm_stats,  # 使用相同的 skip_norm_stats 设置
+            split="val",
+            training=False,
         )
         val_iter = iter(val_loader)  # 创建持久化的验证迭代器
         logging.info(f"Initialized validation data loader")
@@ -678,8 +677,9 @@ def main(config: _config.TrainConfig):
                 checkpoint_manager,
                 train_state,
                 data_loader,
+                config,
                 step,
-                save_full_state=config.save_full_state
+                save_full_state=config.save_full_state,
             )
 
     # 等待检查点管理器完成所有异步保存操作 [内部]

@@ -25,7 +25,7 @@ def make_arx_example() -> dict:
 class ArxInputs(transforms.DataTransformFn):
     """Transform inputs for the ARX policy."""
 
-    mode: str = "s2s"  # "s2s", "s2m", "sm2m", "sm2sm"
+    mode: str = "s2s"  # "s2s", "s2m", "sm2m", "sm2sm", "smp2smp"
     action_dim: int = 32
     model_type: _model.ModelType = _model.ModelType.PI0
     state_history_size: int = 0
@@ -35,8 +35,11 @@ class ArxInputs(transforms.DataTransformFn):
     random_drop_master: float = 0.
     random_drop_history: float = 0.
     random_drop_future: float = 0.
+    random_drop_label: float = 0.
+    random_drop_label_global: bool = True
     random_pos_offset: float = 0.
     only_right_obs: bool = False
+    mask_left_obs: bool = False
 
     EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("left_wrist_view", "face_view", "right_wrist_view")
 
@@ -100,23 +103,29 @@ class ArxInputs(transforms.DataTransformFn):
             pos_offset = (np.random.rand(3) * 2 - 1.) * self.random_pos_offset
             inputs["state"][..., 7:10] += pos_offset
             inputs["actions"][..., 7:10] += pos_offset
-            if self.mode in ["sm2m", "sm2sm"]:
+            if self.mode in ["sm2m", "sm2sm", "smp2smp"]:
                 inputs["state"][..., 21:24] += pos_offset
-            if self.mode == "sm2sm":
+            if self.mode in ["sm2sm", "smp2smp"]:
                 inputs["actions"][..., 21:24] += pos_offset
         
-        if self.only_right_obs:
-            #inputs["image_mask"]["base_0_rgb"] = np.False_
+        if self.only_right_obs or self.mask_left_obs:
             inputs["image_mask"]["left_wrist_0_rgb"] = np.False_
             if self.slave_state_dim == 14:  # (left + right) x (pos + rot + gripper)
                 inputs["state"][..., :7] = 0.
-                if self.mode in ["sm2m", "sm2sm"]:
+                if self.mode in ["sm2m", "sm2sm", "smp2smp"]:
                     inputs["state"][..., 14:21] = 0.
                 if "actions" in inputs:
                     inputs["actions"][..., :7] = 0.
-                    if self.mode == "sm2sm":
+                    if self.mode in ["sm2sm", "smp2smp"]:
                         inputs["actions"][..., 14:21] = 0.
-            
+                        
+            if self.only_right_obs:
+                inputs["image_mask"]["base_0_rgb"] = np.False_
+
+        if random.random() < self.random_drop_label:
+            if self.random_drop_label_global or (inputs["state"][0, 28] != inputs["actions"][10, 28]):  # todo 定义 transition more robustly
+                state[:, 28] = 0
+
         return inputs
 
     def _mask_states(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -137,7 +146,7 @@ class ArxInputs(transforms.DataTransformFn):
 
         # Data augmentation: randomly drop history/future/master states
         if random.random() < self.random_drop_master:
-            state[:, self.slave_state_dim:] = current_slave
+            state[:, self.slave_state_dim:self.slave_state_dim*2] = current_slave
             master_mask[:] = 1.
         if random.random() < self.random_drop_history and self.state_history_size > 0:
             state[:current_idx] = current_state
@@ -146,7 +155,10 @@ class ArxInputs(transforms.DataTransformFn):
             mask_size = random.randint(1, self.state_future_size)
             state[-mask_size:] = state[-mask_size - 1]
             master_mask[-mask_size:] = 1.
-        
+
+        if self.mode == "smp2smp":
+            state[:, 28] = state[current_idx, 28]
+            
         return state, master_mask
 
 @dataclasses.dataclass(frozen=True)

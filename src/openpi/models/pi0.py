@@ -67,6 +67,7 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.pi05_state_sequence_in_suffix = config.pi05_state_sequence_in_suffix
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -93,6 +94,8 @@ class Pi0(_model.BaseModel):
         if config.pi05:
             self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
+            if config.pi05_state_sequence_in_suffix:
+                self.state_sequence_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
         else:
             self.state_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
@@ -156,6 +159,18 @@ class Pi0(_model.BaseModel):
             num_state_tokens = state.shape[1]
             
             state_tokens = self.state_proj(state)
+            tokens.append(state_tokens)
+            input_mask.append(jnp.ones((state.shape[0], num_state_tokens), dtype=jnp.bool_))
+            ar_mask += [True] + ([False] * (num_state_tokens - 1))
+        elif self.pi05_state_sequence_in_suffix:
+            state = obs.state
+            if state.ndim != 3:
+                raise ValueError(
+                    "PI0.5 suffix state conditioning requires state shape "
+                    f"(batch, sequence_length, state_dim), got {state.shape}"
+                )
+            num_state_tokens = state.shape[1]
+            state_tokens = self.state_sequence_proj(state)
             tokens.append(state_tokens)
             input_mask.append(jnp.ones((state.shape[0], num_state_tokens), dtype=jnp.bool_))
             ar_mask += [True] + ([False] * (num_state_tokens - 1))

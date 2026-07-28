@@ -91,8 +91,16 @@ class DataConfig:
     action_sequence_keys: Sequence[str] = ("actions",)
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # If true, remove training samples whose future action chunk crosses a
+    # frame-level LeRobot task boundary. This keeps one language prompt aligned
+    # with every action in the supervised chunk.
+    filter_cross_task_action_chunks: bool = False
+    # If true, remove training samples whose state/action windows overlap ranges
+    # stored in meta/data_quality/excluded_sample_ranges.json.
+    filter_issue_samples: bool = False
     state_history_size: int = 0
     state_future_size: int = 0
+    state_step: int = 1
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -127,12 +135,18 @@ class ModelTransformFactory(GroupFactory):
             case _model.ModelType.PI0 | _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
                 discrete_state_input = model_config.discrete_state_input if model_config.pi05 else False
+                discrete_state_index = (
+                    model_config.state_sequence_current_index
+                    if model_config.pi05_state_sequence_in_suffix
+                    else None
+                )
                 input_transforms = [
                     _transforms.InjectDefaultPrompt(self.default_prompt),
                     _transforms.ResizeImages(224, 224),
                     _transforms.TokenizePrompt(
                         _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         discrete_state_input=discrete_state_input,
+                        discrete_state_index=discrete_state_index,
                     ),
                 ]
                 if model_config.state_sequence_length > 1:
@@ -180,6 +194,10 @@ class DataConfigFactory(abc.ABC):
     @abc.abstractmethod
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         """Create a data config."""
+
+    def create_for_training(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        """Create a data config with training-only behavior enabled."""
+        return self.create(assets_dirs, model_config)
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
@@ -244,7 +262,11 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     random_drop_history: float = 0.
     random_drop_future: float = 0.
     random_pos_offset: float = 0.
+    random_drop_label: float = 0.
+    random_drop_label_global: bool = True
     only_right_obs: bool = False
+    mask_left_obs: bool = False
+    filter_issue_samples: bool = False
     scaler:float = 1.
     @property
     def state_sequence_length(self) -> int:
@@ -272,7 +294,26 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm"], f"Invalid mode: {self.mode}"
+        return self._create(assets_dirs, model_config, enable_augmentation=False)
+
+    @override
+    def create_for_training(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return self._create(assets_dirs, model_config, enable_augmentation=True)
+
+    def _create(
+        self,
+        assets_dirs: pathlib.Path,
+        model_config: _model.BaseModelConfig,
+        *,
+        enable_augmentation: bool,
+    ) -> DataConfig:
+        assert self.mode in ["s2s", "s2m", "sm2m", "sm2sm", "smp2smp"], f"Invalid mode: {self.mode}"
+
+        random_drop_master = self.random_drop_master if enable_augmentation else 0.0
+        random_drop_history = self.random_drop_history if enable_augmentation else 0.0
+        random_drop_future = self.random_drop_future if enable_augmentation else 0.0
+        random_drop_label = self.random_drop_label if enable_augmentation else 0.0
+        random_pos_offset = self.random_pos_offset if enable_augmentation else 0.0
 
         data_transforms = _transforms.Group(
             inputs=[arx_policy.ArxInputs(
@@ -283,11 +324,14 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 state_future_size=self.state_future_size,
                 slave_state_dim=self.slave_state_dim,
                 mask_history_slave_states=self.mask_history_slave_states,
-                random_drop_master=self.random_drop_master,
-                random_drop_history=self.random_drop_history,
-                random_drop_future=self.random_drop_future,
-                random_pos_offset=self.random_pos_offset,
+                random_drop_master=random_drop_master,
+                random_drop_history=random_drop_history,
+                random_drop_future=random_drop_future,
+                random_drop_label=random_drop_label,
+                random_drop_label_global=self.random_drop_label_global,
+                random_pos_offset=random_pos_offset,
                 only_right_obs=self.only_right_obs,
+                mask_left_obs=self.mask_left_obs,
             )],
             outputs=[arx_policy.ArxOutputs(action_dim=self.action_dim)],
         )
@@ -307,29 +351,41 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
         # Create base config and fix zero-variance dimensions if needed
         base_config = self.create_base_config(assets_dirs, model_config)
         
-        # Fix zero-variance dimensions in norm_stats if configured
-        if self.random_drop_master > 0. or self.random_drop_future > 0.:
+        # State-sequence policies reserve the last state dimension for a binary availability mask. Norm stats are
+        # computed from unmasked data, but both training augmentation and inference latency handling can set it to 1.
+        uses_state_mask = self.state_sequence_length > 1
+        if base_config.norm_stats is not None and uses_state_mask:
             import numpy as np
 
-            if base_config.norm_stats is None:
-                logging.warning("Cannot fix zero-variance dimensions: norm_stats is None")
-            else:
-                norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
-                state_stats = norm_stats["state"]
-                new_std = np.array(state_stats.std, copy=True)
-                zero_var_indices = np.where(new_std == 0)[0]
-                if len(zero_var_indices) > 0:
-                    new_std[zero_var_indices] = 1.0
-                    logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
+            norm_stats = dict(base_config.norm_stats)  # Shallow copy of dict
+            state_stats = norm_stats["state"]
+            new_std = np.array(state_stats.std, copy=True)
+            zero_var_indices = np.where(new_std == 0)[0]
+            if len(zero_var_indices) > 0:
+                new_std[zero_var_indices] = 1.0
+                logging.info(f"Fixed {len(zero_var_indices)} zero-variance state dimensions: {zero_var_indices.tolist()}")
 
-                    # NormStats is a pydantic dataclass, recreate it
-                    norm_stats["state"] = _normalize.NormStats(
-                        mean=state_stats.mean,
-                        std=new_std,
-                        q01=state_stats.q01,
-                        q99=state_stats.q99,
+            q01 = None if state_stats.q01 is None else np.array(state_stats.q01, copy=True)
+            q99 = None if state_stats.q99 is None else np.array(state_stats.q99, copy=True)
+            if base_config.use_quantile_norm:
+                if q01 is None or q99 is None:
+                    raise ValueError("PI0.5 state sequence conditioning requires quantile norm statistics")
+                mask_index = model_config.action_dim - 1
+                if mask_index >= q01.shape[-1]:
+                    raise ValueError(
+                        f"Mask index {mask_index} is outside state norm stats with dimension {q01.shape[-1]}"
                     )
-                    base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
+                q01[mask_index] = 0.0
+                q99[mask_index] = 1.0
+                logging.info(f"Set quantile range of state mask dimension {mask_index} to [0, 1]")
+
+            norm_stats["state"] = _normalize.NormStats(
+                mean=state_stats.mean,
+                std=new_std,
+                q01=q01,
+                q99=q99,
+            )
+            base_config = dataclasses.replace(base_config, norm_stats=norm_stats)
 
         return dataclasses.replace(
             base_config,
@@ -339,6 +395,8 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
             state_history_size=self.state_history_size,
             state_future_size=self.state_future_size,
             scaler=self.scaler,
+            state_step=self.state_step,
+            filter_issue_samples=self.filter_issue_samples and enable_augmentation,
         )
 
 
@@ -826,18 +884,35 @@ class TrainConfig:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
         
-        # Auto-sync state_sequence_length from data to model
-        data_seq_len = getattr(self.data, 'state_sequence_length', 1)
-        model_seq_len = getattr(self.model, 'state_sequence_length', 1)
-        
+        # Auto-sync state sequence metadata from data to model.
+        data_seq_len = getattr(self.data, "state_sequence_length", 1)
+        model = self.model
+        model_seq_len = getattr(model, "state_sequence_length", 1)
+
         if data_seq_len > 1 and model_seq_len == 1:
-            new_model = dataclasses.replace(self.model, state_sequence_length=data_seq_len)
-            object.__setattr__(self, 'model', new_model)
-        elif model_seq_len != data_seq_len and model_seq_len != 1:
+            model = dataclasses.replace(model, state_sequence_length=data_seq_len)
+        elif model_seq_len not in (data_seq_len, 1):
             raise ValueError(
                 f"Mismatch: model.state_sequence_length={model_seq_len}, "
                 f"data.state_sequence_length={data_seq_len}"
             )
+
+        if isinstance(model, pi0_config.Pi0Config) and model.pi05_state_sequence_in_suffix:
+            if data_seq_len <= 1:
+                raise ValueError("PI0.5 suffix state conditioning requires a state sequence")
+            if not model.discrete_state_input:
+                raise ValueError("PI0.5 suffix state conditioning requires discrete_state_input=True")
+            current_index = getattr(self.data, "state_history_size", 0)
+            if model.state_sequence_current_index is None:
+                model = dataclasses.replace(model, state_sequence_current_index=current_index)
+            elif model.state_sequence_current_index != current_index:
+                raise ValueError(
+                    f"Mismatch: model.state_sequence_current_index={model.state_sequence_current_index}, "
+                    f"data.state_history_size={current_index}"
+                )
+
+        if model is not self.model:
+            object.__setattr__(self, "model", model)
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1489,6 +1564,147 @@ _CONFIGS = [
         exp_name="plugusb_0119+0120+0121_sm2sm_jr_h9oro_a20_dm10dh30",
     ),
     TrainConfig(
+        name="pourtea_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_chengdu_20260601-20260605_sm2sm", # Multiple datasets separated by comma
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        
+        exp_name="pourtea_sm2sm_h3f3oro_a20_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="pourtea_subtask_prompt_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_subtask_prompt_sm2sm_15hz",
+            base_config=DataConfig(filter_cross_task_action_chunks=True),
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"
+        ),
+        exp_name="pourtea_subtask_prompt_sm2sm_15hz_h3f3oro_a20_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="table_clean_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="table_clean_x1pro_sm2sm_15hz",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=32,
+        exp_name="table_clean_sm2sm_15hz_h3f3oro_a30_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="table_clean_pi05_sm2sm",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            pi05_state_sequence_in_suffix=True,
+        ),
+        data=LeRobotX2robotDataConfig(
+            repo_id="table_clean_x1pro_sm2sm_15hz_v2",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=28,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*(?:lora|state_sequence_proj).*",
+        ),
+        batch_size=32,
+        exp_name="table_clean_pi05_sm2sm_15hz_v2_h3f3oro_a30_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="pourtea_key_state_sm2sm",
+        model=pi0_config.Pi0Config(action_horizon=20),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_key_state_sm2sm",
+            mode="sm2sm",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
+
+        exp_name="pourtea_key_state_sm2sm_h3f3oro_a20_dm10dh30po20",
+    ),
+    TrainConfig(
+        name="pourtea_smp2smp",
+        model=pi0_config.Pi0Config(action_horizon=30),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_key_state_sm2sm_human_15hz_v3",
+            mode="smp2smp",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"
+        ),
+        batch_size=128,
+        num_train_steps=40_000,
+        exp_name="pourtea_smp2smp_human_15hz_v3_h3f3oro_a30_dm10dh30po20_bs128_steps40k",
+    ),
+    TrainConfig(
+        name="pourtea_pi05_smp2smp",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            pi05_state_sequence_in_suffix=True,
+        ),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pour_tea_x1pro_key_state_sm2sm_human_15hz_v5",
+            assets=AssetsConfig(assets_dir="assets/pourtea_smp2smp"),
+            mode="smp2smp",
+            state_history_size=3,
+            state_future_size=3,
+            action_dim=29,
+            random_drop_master=0.10,
+            random_drop_history=0.30,
+            random_pos_offset=0.020,
+            filter_issue_samples=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*(?:lora|state_sequence_proj).*",
+        ),
+        batch_size=128,
+        num_train_steps=30_000,
+        exp_name="pourtea_pi05_smp2smp_human_15hz_v5_filtered_h3f3oro_a30_dm10dh30po20_bs128_steps30k",
+    ),
+    TrainConfig(
         name="pipeline_s2s",
         model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
@@ -1535,22 +1751,22 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pipeline_sm2sm",
-        model=pi0_config.Pi0Config(action_horizon=20),
+        model=pi0_config.Pi0Config(action_horizon=30),
         data=LeRobotX2robotDataConfig(
-            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm", # Multiple datasets separated by comma
+            repo_id="pipeline_0120_sm2sm,pipeline_0121_sm2sm,pipeline_0422_sm2sm,pipeline_0423_sm2sm", # Multiple datasets separated by comma
             mode="sm2sm",
             state_history_size=9,
-            state_future_size=8,
-            only_right_obs=True,
+            state_future_size=4,
+            mask_left_obs=True,
             action_dim=28,
             random_drop_master=0.10,
             random_drop_history=0.50,
-            random_drop_future=0.90,
+            random_drop_future=0.80,
             random_pos_offset=0.020,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("/root/.cache/openpi/openpi-assets/checkpoints/pi0_base/params"),
         
-        exp_name="pipeline_0120_sm2sm_h9f8oro_a20_dm10dh50df90po20",
+        exp_name="pipeline_0120+0121+0422+0423_sm2sm_h9f4mlo_a30_dm10dh50df80po20",
     ),
     TrainConfig(
         name="wipe_sm2sm",

@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
+from openpi.training import checkpoint_metadata as _checkpoint_metadata
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
@@ -92,3 +93,12 @@ def create_trained_policy(
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
     )
+
+
+def create_trained_policy_from_checkpoint(
+    checkpoint_dir: pathlib.Path | str,
+    **kwargs: Any,
+) -> _policy.Policy:
+    """Create a policy using the resolved config stored with the checkpoint."""
+    train_config = _checkpoint_metadata.load_train_config(checkpoint_dir)
+    return create_trained_policy(train_config, checkpoint_dir, **kwargs)

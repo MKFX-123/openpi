@@ -33,12 +33,19 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
     # Number of state frames: history + current + future. Auto-set by TrainConfig.
     state_sequence_length: int = 1
+    # For PI0.5 sm2sm policies, inject the full state sequence before the noisy action tokens.
+    # The current state stays in the discrete prefix to preserve the pretrained PI0.5 input format.
+    pi05_state_sequence_in_suffix: bool = False
+    # Index of the current state in the state sequence. Auto-set from the data config by TrainConfig.
+    state_sequence_current_index: int | None = None
 
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.pi05_state_sequence_in_suffix and not self.pi05:
+            raise ValueError("pi05_state_sequence_in_suffix requires pi05=True")
 
     @property
     @override

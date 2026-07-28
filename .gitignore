@@ -5,6 +5,7 @@ data/
 wandb/
 datasets/
 offline_test*/
+logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

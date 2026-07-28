@@ -142,7 +142,8 @@ class Normalize(DataTransformFn):
         assert stats.q01 is not None
         assert stats.q99 is not None
         q01, q99 = stats.q01[..., : x.shape[-1]], stats.q99[..., : x.shape[-1]]
-        return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        normalized = (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        return np.clip(normalized, -2.0, 2.0)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -248,6 +249,7 @@ class AbsoluteActions(DataTransformFn):
 class TokenizePrompt(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
     discrete_state_input: bool = False
+    discrete_state_index: int | None = None
 
     def __call__(self, data: DataDict) -> DataDict:
         if (prompt := data.pop("prompt", None)) is None:
@@ -256,6 +258,19 @@ class TokenizePrompt(DataTransformFn):
         if self.discrete_state_input:
             if (state := data.get("state", None)) is None:
                 raise ValueError("State is required.")
+            state = np.asarray(state)
+            if self.discrete_state_index is not None:
+                if state.ndim != 2:
+                    raise ValueError(
+                        "A discrete_state_index requires a state sequence with shape (sequence_length, state_dim), "
+                        f"got {state.shape}"
+                    )
+                if not 0 <= self.discrete_state_index < state.shape[0]:
+                    raise ValueError(
+                        f"discrete_state_index={self.discrete_state_index} is out of range "
+                        f"for state shape {state.shape}"
+                    )
+                state = state[self.discrete_state_index]
         else:
             state = None
 

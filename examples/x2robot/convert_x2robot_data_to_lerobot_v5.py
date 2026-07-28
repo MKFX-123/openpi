@@ -6,14 +6,14 @@ Optimization strategy:
 2. Sequential dataset building (metadata only, use dummy video stats)
 3. No need for sample frame extraction!
 
-Key insight: Use ffmpeg to directly transcode from source MP4 to AV1 MP4,
+Key insight: Use ffmpeg to directly transcode from source MP4 to the target codec,
 and use dummy statistics for video features (since they're always [0,1] normalized anyway).
 
 V4 workflow:
-  Source MP4 → ffmpeg decode → PNG files → encode_video_frames → AV1 MP4
+  Source MP4 → ffmpeg decode → PNG files → encode_video_frames → target MP4
 
 V5 workflow:
-  Source MP4 → ffmpeg transcode → AV1 MP4 (single step!)
+  Source MP4 → ffmpeg transcode → target MP4 (single step!)
   Video stats → use dummy values (min=0, max=1, mean~0.4, std~0.25)
 
 Expected speedup: ~2-3x
@@ -38,12 +38,18 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "microwave_scale"
+REPO_NAME = "pour_tea_chengdu_20260601-20260605_sm2sm"
 RAW_DATASET_PATHS = [
-    '/mnt/public/datasets/x2robot/microwave_1218/',
-    '/mnt/public/datasets/x2robot/microwave_0109/',
-    '/mnt/public/datasets/x2robot/microwave_0325/',
-    '/mnt/public/datasets/x2robot/microwave_0327/',
+    './datasets/pour_tea/chengdu_huangdandan_20260601_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260602_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260603_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260604_pm/',
+    './datasets/pour_tea/chengdu_huangdandan_20260605_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260601_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260602_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260603_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260604_pm/',
+    './datasets/pour_tea/chengdu_wenpei_20260605_pm/',
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -114,13 +120,22 @@ def find_episodes(raw_paths: list[str]) -> list[str]:
     return sorted(episode_paths)
 
 
-def load_json_data(episode_path: str) -> tuple[np.ndarray, np.ndarray]:
+def load_json_data(
+    episode_path: str,
+    target_frame_count: int,
+    target_fps: int,
+) -> tuple[np.ndarray, np.ndarray]:
     """Load and parse JSON data for an episode."""
     episode_name = os.path.basename(episode_path)
     json_path = os.path.join(episode_path, f"{episode_name}.json")
     
     with open(json_path, 'r') as f:
-        data = json.load(f)['data']
+        payload = json.load(f)
+    data = payload['data']
+    source_fps = float(payload.get("fps", 30.0))
+    target_indices = np.arange(target_frame_count, dtype=np.float64)
+    source_indices = np.rint(target_indices * source_fps / target_fps).astype(np.int64)
+    source_indices = np.clip(source_indices, 0, len(data) - 1)
     
     all_keys = set(STATE_KEYS) | set(ACTION_KEYS)
     trajectories = {key: [] for key in all_keys}
@@ -135,8 +150,8 @@ def load_json_data(episode_path: str) -> tuple[np.ndarray, np.ndarray]:
             arr = arr.reshape(-1, 1)
         arrays[key] = arr
     
-    state_array = np.concatenate([arrays[key] for key in STATE_KEYS], axis=1)
-    action_array = np.concatenate([arrays[key] for key in ACTION_KEYS], axis=1)
+    state_array = np.concatenate([arrays[key][source_indices] for key in STATE_KEYS], axis=1)
+    action_array = np.concatenate([arrays[key][source_indices] for key in ACTION_KEYS], axis=1)
     return state_array, action_array
 
 
@@ -187,7 +202,21 @@ def transcode_video_ffmpeg(
     ]
     
     probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+    if probe_result.returncode != 0 or not probe_result.stdout.strip():
+        raise RuntimeError(f"ffprobe failed for {output_path}: {probe_result.stderr}")
     num_frames = int(probe_result.stdout.strip())
+
+    decode_check_cmd = [
+        "ffmpeg", "-v", "error",
+        "-xerror",
+        "-nostdin",
+        "-i", str(output_path),
+        "-f", "null",
+        "-"
+    ]
+    decode_check_result = subprocess.run(decode_check_cmd, capture_output=True, text=True)
+    if decode_check_result.returncode != 0 or decode_check_result.stderr.strip():
+        raise RuntimeError(f"ffmpeg decode check failed for {output_path}: {decode_check_result.stderr}")
     
     return num_frames
 
@@ -199,21 +228,29 @@ def transcode_single_video(
     video_filename: str,
     output_root: Path,
     target_size: tuple[int, int],
-    fps: int = 20
+    fps: int = 20,
+    video_codec: str = "h264",
 ) -> tuple[int, str, int]:
     """转码单个视频文件。返回 (episode_idx, camera_name, num_frames)。"""
     video_path = os.path.join(episode_path, video_filename)
     output_path = output_root / "videos" / "chunk-000" / camera_name / f"episode_{episode_index:06d}.mp4"
     
+    if video_codec == "av1":
+        vcodec, crf = "libsvtav1", 30
+    elif video_codec == "h264":
+        vcodec, crf = "libx264", 23
+    else:
+        raise ValueError(f"Unsupported video codec: {video_codec}")
+
     num_frames = transcode_video_ffmpeg(
         video_path,
         output_path,
         target_size,
         fps,
-        vcodec="libsvtav1",
+        vcodec=vcodec,
         pix_fmt="yuv420p",
         g=2,
-        crf=30
+        crf=crf,
     )
     
     return episode_index, camera_name, num_frames
@@ -367,28 +404,44 @@ class NoVideoIOLeRobotDataset(LeRobotDataset):
 
 
 def main(
+    dataset_root: Path | None = None,
+    repo_name: str = REPO_NAME,
     push_to_hub: bool = False,
     debug: bool = False,
     debug_episodes: int = 3,
     low_resolution: bool = True,
     num_workers: int = 10,
+    target_fps: int = 20,
+    video_codec: str = "h264",
+    overwrite: bool = False,
 ):
     """
     V5: Direct ffmpeg transcoding optimization.
     """
+    if target_fps <= 0:
+        raise ValueError(f"target_fps must be positive, got {target_fps}")
+    if video_codec not in {"av1", "h264"}:
+        raise ValueError(f"Unsupported video codec: {video_codec}")
+
     print(f"HF_LEROBOT_HOME: {HF_LEROBOT_HOME}")
-    print(f"V5: Direct ffmpeg transcoding (num_workers={num_workers})")
+    print(f"V5: Direct ffmpeg transcoding (num_workers={num_workers}, codec={video_codec})")
+    print(f"Target fps: {target_fps}")
     
-    output_path = HF_LEROBOT_HOME / REPO_NAME
+    output_path = HF_LEROBOT_HOME / repo_name
     if output_path.exists():
+        if not overwrite:
+            raise FileExistsError(f"{output_path} already exists. Pass --overwrite to replace it.")
         print(f"Removing existing dataset at {output_path}")
         shutil.rmtree(output_path)
     
-    episode_paths = find_episodes(RAW_DATASET_PATHS)
+    raw_dataset_paths = [str(dataset_root)] if dataset_root is not None else RAW_DATASET_PATHS
+    episode_paths = find_episodes(raw_dataset_paths)
     print(f"Found {len(episode_paths)} episodes")
     if debug:
         episode_paths = episode_paths[:debug_episodes]
         print(f"Debug mode: only processing first {debug_episodes} episodes")
+
+    episode_failures: dict[int, list[str]] = {}
     
     target_size = (320, 240) if low_resolution else (640, 480)
     shape = (target_size[1], target_size[0], 3)  # (H, W, C)
@@ -400,9 +453,9 @@ def main(
     # ========================================
     print("\nCreating LeRobotDataset...")
     dataset = NoVideoIOLeRobotDataset.create(
-        repo_id=REPO_NAME,
+        repo_id=repo_name,
         robot_type="ARX",
-        fps=20,
+        fps=target_fps,
         features={
             "face_view": {
                 "dtype": "video",
@@ -448,7 +501,9 @@ def main(
     transcode_tasks = []
     for ep_idx, ep_path in enumerate(episode_paths):
         for camera_name, video_filename in FILE_CAMERA_MAPPING.items():
-            transcode_tasks.append((ep_path, ep_idx, camera_name, video_filename, output_path, target_size, 20))
+            transcode_tasks.append(
+                (ep_path, ep_idx, camera_name, video_filename, output_path, target_size, target_fps, video_codec)
+            )
     
     episode_frame_counts = {}
     
@@ -467,12 +522,56 @@ def main(
                     episode_frame_counts[ep_idx][camera_name] = num_frames
                 except Exception as e:
                     ep_path, ep_idx, camera = futures[future]
-                    print(f"Error transcoding episode {ep_idx} camera {camera}: {e}")
-                    raise
+                    error_summary = "\n".join(str(e).splitlines()[-8:])
+                    episode_failures.setdefault(ep_idx, []).append(
+                        f"{camera} transcode failed: {error_summary}"
+                    )
+                    print(
+                        f"\nSkipping episode {ep_idx} after transcode error "
+                        f"({camera}): {ep_path}\n{error_summary}\n"
+                    )
                 pbar.update(1)
     
     t_transcode_end = time.time()
     print(f"Transcoding completed in {t_transcode_end - t_transcode_start:.2f}s")
+
+    skipped_episode_indices = sorted(episode_failures)
+    successful_episode_indices = [
+        ep_idx for ep_idx in range(len(episode_paths))
+        if ep_idx not in episode_failures
+    ]
+
+    for ep_idx in skipped_episode_indices:
+        for camera_name in FILE_CAMERA_MAPPING:
+            path = output_path / "videos" / "chunk-000" / camera_name / f"episode_{ep_idx:06d}.mp4"
+            if path.exists():
+                path.unlink()
+
+    for new_idx, old_idx in enumerate(successful_episode_indices):
+        if new_idx == old_idx:
+            continue
+        for camera_name in FILE_CAMERA_MAPPING:
+            src = output_path / "videos" / "chunk-000" / camera_name / f"episode_{old_idx:06d}.mp4"
+            dst = output_path / "videos" / "chunk-000" / camera_name / f"episode_{new_idx:06d}.mp4"
+            if src.exists():
+                if dst.exists():
+                    dst.unlink()
+                src.rename(dst)
+
+    processed_episode_paths = [episode_paths[ep_idx] for ep_idx in successful_episode_indices]
+    processed_video_frame_counts = [
+        min(episode_frame_counts[ep_idx].values()) for ep_idx in successful_episode_indices
+    ]
+
+    if skipped_episode_indices:
+        print(f"Skipped {len(skipped_episode_indices)} episodes:")
+        for ep_idx in skipped_episode_indices:
+            print(f"  [{ep_idx}] {episode_paths[ep_idx]}")
+            for reason in episode_failures[ep_idx]:
+                print(f"      - {reason}")
+
+    if not processed_episode_paths:
+        raise RuntimeError("No valid episodes left after transcoding.")
     
     # ========================================
     # PHASE 2: Build Dataset (metadata only)
@@ -488,8 +587,14 @@ def main(
     import datasets
     datasets.disable_progress_bars()
     
-    for ep_idx, ep_path in tqdm.tqdm(enumerate(episode_paths), total=len(episode_paths), desc="Building dataset"):
-        state_array, action_array = load_json_data(ep_path)
+    for ep_idx, (ep_path, video_frame_count) in enumerate(
+        tqdm.tqdm(
+            zip(processed_episode_paths, processed_video_frame_counts, strict=True),
+            total=len(processed_episode_paths),
+            desc="Building dataset",
+        )
+    ):
+        state_array, action_array = load_json_data(ep_path, video_frame_count, target_fps)
         num_frames = len(state_array)
         
         # 设置视频帧数（用于伪统计）
@@ -530,11 +635,13 @@ def main(
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
-    print(f"  Episodes processed: {len(episode_paths)}")
+    print(f"  Episodes found:     {len(episode_paths)}")
+    print(f"  Episodes processed: {len(processed_episode_paths)}")
+    print(f"  Episodes skipped:   {len(skipped_episode_indices)}")
     print(f"  Phase 1 (transcode): {t_transcode_end - t_transcode_start:.2f}s")
     print(f"  Phase 2 (build):     {t_build_end - t_build_start:.2f}s")
     print(f"  Total:               {total_time:.2f}s")
-    print(f"  Average per episode: {total_time/len(episode_paths):.2f}s")
+    print(f"  Average per episode: {total_time/len(processed_episode_paths):.2f}s")
     print(f"{'='*60}")
     print(f"Dataset saved at {output_path}")
     

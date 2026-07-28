@@ -1,20 +1,10 @@
-# ============================================================================
-# OpenPI 数据加载器模块
-#
-# 本模块实现了训练数据的加载、变换和批次处理，支持：
-# - LeRobot 格式数据集（HuggingFace 标准）
-# - RLDS 格式数据集（Google DROID）
-# - 多数据集合并
-# - 数据变换（归一化、动作类型转换等）
-# - 分布式训练支持
-# ============================================================================
-
-# 标准库导入
-from collections.abc import Iterator, Sequence  # [标准库] 抽象基类类型
-import logging                                # [标准库] 日志记录
-import multiprocessing                        # [标准库] 多进程支持
-import os                                     # [标准库] 环境变量
-import typing                                 # [标准库] 类型注解
+from collections.abc import Iterator, Sequence
+import json
+import logging
+import multiprocessing
+import os
+from pathlib import Path
+import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 # JAX 生态系统
@@ -243,8 +233,19 @@ class FilteredLeRobotDataset(lerobot_dataset.LeRobotDataset):
         Returns:
             查询到的视频帧数据
         """
-        # 不要重映射 ep_idx - 视频文件使用原始 episode 索引
-        return super()._query_videos(query_timestamps, ep_idx)
+        # Do NOT remap ep_idx here - video files use original episode indices
+        try:
+            return super()._query_videos(query_timestamps, ep_idx)
+        except Exception as e:
+            video_paths = {
+                key: str(self.root / self.meta.get_video_file_path(ep_idx, key))
+                for key in self.meta.video_keys
+            }
+            raise RuntimeError(
+                "Video decode failed. "
+                f"repo_id={self.repo_id}, ep_idx={ep_idx}, "
+                f"query_timestamps={query_timestamps}, video_paths={video_paths}"
+            ) from e
 
 
 # ============================================================================
@@ -392,6 +393,102 @@ class TransformedDataset(Dataset[T_co]):
             样本总数（变换不改变数据集大小）
         """
         return len(self._dataset)
+
+
+def _int_column(values) -> np.ndarray:
+    return np.fromiter(
+        (int(value.item()) if hasattr(value, "item") else int(value) for value in values),
+        dtype=np.int64,
+        count=len(values),
+    )
+
+
+class LeRobotSampleFilterDataset(Dataset[T_co]):
+    """Apply frame-window filters to a LeRobot dataset without modifying its rows."""
+
+    def __init__(
+        self,
+        dataset: Dataset[T_co],
+        *,
+        action_horizon: int,
+        state_history_size: int,
+        state_future_size: int,
+        state_step: int,
+        filter_cross_task_action_chunks: bool,
+        filter_issue_samples: bool,
+    ):
+        hf_dataset = getattr(dataset, "hf_dataset", None)
+        if hf_dataset is None:
+            raise TypeError("LeRobotSampleFilterDataset requires a LeRobot dataset with hf_dataset")
+        if "episode_index" not in hf_dataset.column_names:
+            raise ValueError("LeRobot dataset has no episode_index column")
+
+        episode_indices = _int_column(hf_dataset["episode_index"])
+        keep = np.ones(len(episode_indices), dtype=bool)
+        self.task_filtered_samples = 0
+        self.issue_filtered_samples = 0
+
+        if filter_cross_task_action_chunks:
+            if "task_index" not in hf_dataset.column_names:
+                raise ValueError("LeRobot dataset has no task_index column")
+            task_indices = _int_column(hf_dataset["task_index"])
+            task_keep = np.ones(len(task_indices), dtype=bool)
+            task_boundaries = np.flatnonzero(
+                (episode_indices[1:] == episode_indices[:-1])
+                & (task_indices[1:] != task_indices[:-1])
+            ) + 1
+            for boundary in task_boundaries:
+                first = max(0, int(boundary) - action_horizon + 1)
+                candidates = np.arange(first, boundary, dtype=np.int64)
+                same_episode = episode_indices[candidates] == episode_indices[boundary]
+                task_keep[candidates[same_episode]] = False
+            self.task_filtered_samples = int((~task_keep).sum())
+            keep &= task_keep
+
+        if filter_issue_samples:
+            if "frame_index" not in hf_dataset.column_names:
+                raise ValueError("LeRobot dataset has no frame_index column")
+            root = Path(str(getattr(dataset, "root")))
+            metadata_path = root / "meta" / "data_quality" / "excluded_sample_ranges.json"
+            if not metadata_path.is_file():
+                raise FileNotFoundError(
+                    f"Issue sample filtering requested but metadata is missing: {metadata_path}"
+                )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            frame_indices = _int_column(hf_dataset["frame_index"])
+            issue_keep = np.ones(len(frame_indices), dtype=bool)
+            min_delta = -state_history_size * state_step
+            max_delta = max(action_horizon - 1, state_future_size * state_step)
+
+            for episode in metadata.get("episodes", []):
+                episode_index = int(episode["episode_index"])
+                episode_mask = episode_indices == episode_index
+                for start, end in episode.get("sample_ranges", []):
+                    invalid_start = int(start) - max_delta
+                    invalid_end = int(end) - min_delta
+                    issue_keep[
+                        episode_mask
+                        & (frame_indices >= invalid_start)
+                        & (frame_indices < invalid_end)
+                    ] = False
+            self.issue_filtered_samples = int((~issue_keep).sum())
+            keep &= issue_keep
+
+        self._dataset = dataset
+        self._indices = np.flatnonzero(keep)
+        self.total_samples = len(keep)
+        self.filtered_samples = self.total_samples - len(self._indices)
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        mapped_index = index.__index__()
+        if mapped_index < 0:
+            mapped_index += len(self)
+        if mapped_index < 0 or mapped_index >= len(self):
+            raise IndexError(f"Index {index} is out of range for dataset of length {len(self)}")
+        return self._dataset[int(self._indices[mapped_index])]
+
+    def __len__(self) -> int:
+        return len(self._indices)
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -864,7 +961,24 @@ def create_torch_dataset(
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
 
-        # 如果需要从任务名称生成语言提示
+        if data_config.filter_cross_task_action_chunks or data_config.filter_issue_samples:
+            dataset = LeRobotSampleFilterDataset(
+                dataset,
+                action_horizon=action_horizon,
+                state_history_size=state_history_size,
+                state_future_size=state_future_size,
+                state_step=state_step,
+                filter_cross_task_action_chunks=data_config.filter_cross_task_action_chunks,
+                filter_issue_samples=data_config.filter_issue_samples,
+            )
+            logging.info(
+                "Filtered %d/%d samples (task boundaries: %d, issue ranges: %d)",
+                dataset.filtered_samples,
+                dataset.total_samples,
+                dataset.task_filtered_samples,
+                dataset.issue_filtered_samples,
+            )
+
         if data_config.prompt_from_task:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
@@ -918,8 +1032,26 @@ def create_torch_dataset(
                 repo_id,
                 delta_timestamps=_build_delta_timestamps(dataset_meta.fps),
             )
+        
+        if data_config.filter_cross_task_action_chunks or data_config.filter_issue_samples:
+            dataset = LeRobotSampleFilterDataset(
+                dataset,
+                action_horizon=action_horizon,
+                state_history_size=state_history_size,
+                state_future_size=state_future_size,
+                state_step=state_step,
+                filter_cross_task_action_chunks=data_config.filter_cross_task_action_chunks,
+                filter_issue_samples=data_config.filter_issue_samples,
+            )
+            logging.info(
+                "Filtered %d/%d samples from %s (task boundaries: %d, issue ranges: %d)",
+                dataset.filtered_samples,
+                dataset.total_samples,
+                repo_id,
+                dataset.task_filtered_samples,
+                dataset.issue_filtered_samples,
+            )
 
-        # 从任务名称生成语言提示
         if data_config.prompt_from_task:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
@@ -1078,29 +1210,27 @@ def create_data_loader(
     split: Literal["train", "val"] | None = None,
     val_ratio: float = 0.1,
     split_seed: int = 42,
+    training: bool = True,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """创建数据加载器（统一入口）。
 
     Args:
-        config: 训练配置对象
-        sharding: JAX 分片策略（多 GPU 数据分布）
-        shuffle: 是否打乱数据
-        num_batches: 返回的批次数（None = 无限循环）
-        skip_norm_stats: 是否跳过归一化
-        framework: "jax" 或 "pytorch"
-        split: "train"/"val"/None
-        val_ratio: 验证集比例
-        split_seed: 随机种子
-
-    Returns:
-        DataLoader 对象，产生 (Observation, Actions) 元组
-
-    路由逻辑：
-        1. 如果配置了 RLDS 数据 → create_rlds_data_loader
-        2. 否则 → create_torch_data_loader (LeRobot)
+        config: The training configuration.
+        sharding: The sharding to use for the data loader (JAX only).
+        shuffle: Whether to shuffle the data.
+        num_batches: Determines the number of batches to return.
+        skip_norm_stats: Whether to skip data normalization.
+        framework: The framework to use ("jax" or "pytorch").
+        split: If "train" or "val", only load that split. If None, load all data.
+        val_ratio: Ratio of validation data (default 0.1 means 10% validation).
+        split_seed: Random seed for reproducible train/val splitting.
+        training: Whether to enable training-only data transforms such as augmentation.
     """
-    # 创建数据配置对象
-    data_config = config.data.create(config.assets_dirs, config.model)
+    data_config = (
+        config.data.create_for_training(config.assets_dirs, config.model)
+        if training
+        else config.data.create(config.assets_dirs, config.model)
+    )
     logging.info(f"data_config: {data_config}")
 
     # RLDS 数据集分支

@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "annotation_unit": "frame_index",
+  "segments": [
+    {
+      "id": "remove_lid",
+      "start": {"key": "0", "index": 0},
+      "prompt": "Remove the teapot lid and place it neatly beside the teapot."
+    },
+    {
+      "id": "pick_up_kettle",
+      "start": {"key": "1", "index": 0},
+      "prompt": "Pick up the kettle and position it above the open teapot."
+    },
+    {
+      "id": "pour_water",
+      "start": {"key": "2", "index": 0},
+      "prompt": "Pour hot water steadily from the kettle into the open teapot."
+    },
+    {
+      "id": "return_kettle",
+      "start": {"key": "2", "index": 1},
+      "prompt": "Stop pouring and return the kettle securely to its original place."
+    },
+    {
+      "id": "replace_lid",
+      "start": {"key": "3", "index": 0},
+      "prompt": "Pick up the lid and place it securely onto the teapot."
+    },
+    {
+      "id": "pour_first_cup",
+      "start": {"key": "4", "index": 0},
+      "prompt": "Lift the teapot and pour tea carefully into the first cup."
+    },
+    {
+      "id": "pour_second_cup",
+      "start": {"key": "4", "index": 1},
+      "prompt": "Move to the second cup and pour tea until it is full."
+    },
+    {
+      "id": "pour_third_cup",
+      "start": {"key": "4", "index": 2},
+      "prompt": "Move to the third cup and pour tea until it is full."
+    },
+    {
+      "id": "return_teapot",
+      "start": {"key": "5", "index": 0},
+      "prompt": "Return the teapot carefully to its original position on the table."
+    }
+  ]
+}

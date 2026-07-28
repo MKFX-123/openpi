@@ -22,12 +22,12 @@ class Args:
     """Arguments for the serve_policy script."""
     policy_config: str = "throw_sm2m"
     policy_dir: str = "checkpoints/throw_sm2m/throw_0113_sm2m_h5f3/29999"
-    policy_mode: Literal["s2s", "s2m", "sm2m", "sm2sm"] | None = None
+    policy_mode: Literal["s2s", "s2m", "sm2m", "sm2sm", "smp2smp"] | None = None
     log_replay: bool = False
     state_history_size: int = None
     state_future_size: int = None
     state_step: int = None
-    move_steps: int = 15
+    move_steps: int = 10
     only_right_arm: bool = False
     latency_step: int = None
     server_ip: str = None
@@ -59,7 +59,7 @@ def read_img(conn):
 def main(args: Args) -> None:
     # Auto-detect policy_mode from policy_dir if not specified
     if args.policy_mode is None:
-        for mode in ['sm2sm', 'sm2m', 's2m', 's2s']:
+        for mode in ['smp2smp', 'sm2sm', 'sm2m', 's2m', 's2s']:
             if mode in args.policy_dir.lower():
                 args.policy_mode = mode
                 logging.info(f"Auto-detected policy_mode from path: {args.policy_mode}")
@@ -151,6 +151,7 @@ def main(args: Args) -> None:
     state_seq_len = args.state_history_size + 1 + args.state_future_size
     latency_len = args.state_history_size + 1 + args.latency_step
     master_queue = deque(maxlen=100)  # queue_len * 14
+    master_dim = 15 if mode == "smp2smp" else 14
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setblocking(True) #设置通信是阻塞式
@@ -191,7 +192,10 @@ def main(args: Args) -> None:
                 slave_state = np.concatenate([slave_state] + [slave_state[-1:]] * args.state_future_size)
 
                 if not master_queue:
-                    master_queue.extend([slave_state[-1]] * max(state_seq_len, latency_len))
+                    if mode == "smp2smp":
+                        master_queue.extend([np.concatenate([slave_state[-1], [0]])] * max(state_seq_len, latency_len))
+                    else:
+                        master_queue.extend([slave_state[-1]] * max(state_seq_len, latency_len))
 
                 master_list = list(master_queue)[-latency_len:]
                 if args.latency_step < args.state_future_size:  # inpainting mode
@@ -204,8 +208,8 @@ def main(args: Args) -> None:
                 if args.policy_mode in ["s2s", "s2m"]:
                     state[:, :14] = slave_state
                 else:
-                    state[:, :28] = np.concatenate([slave_state, master_state], axis=1)
-
+                    state[:, :14 + master_dim] = np.concatenate([slave_state, master_state], axis=1)
+                
                 if args.only_right_arm:
                     if norm_stats is not None:
                         mean = np.asarray(norm_stats["state"].mean)
@@ -225,9 +229,11 @@ def main(args: Args) -> None:
                 }
                 action_pred = policy.infer(obs)
                 action_pred = action_pred['actions']
-                if args.policy_mode == "sm2sm":
-                    _, master_action = action_pred[:, :14], action_pred[:, 14:28]
+                if args.policy_mode in ["sm2sm", "smp2smp"]:
+                    _, master_action = action_pred[:, :14], action_pred[:, 14:14+master_dim]
                     action_pred = master_action
+                if args.policy_mode == "smp2smp":
+                    print(f"predict weight: {action_pred[0, 14]}")
 
                 action_pred = action_pred[args.latency_step:]
                 action_pred = action_pred[:args.move_steps, ...]  # (move_steps, 14)
@@ -236,7 +242,7 @@ def main(args: Args) -> None:
                     master_queue.append(action)
 
                 follow1_pos = action_pred[:, :7].tolist()
-                follow2_pos = action_pred[:, 7:].tolist()
+                follow2_pos = action_pred[:, 7:14].tolist()
 
                 data_dir ={
                     "follow1_pos":follow1_pos,
