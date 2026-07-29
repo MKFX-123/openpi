@@ -20,6 +20,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.arx_policy as arx_policy
 import openpi.policies.acc_policy as acc_policy
+import openpi.policies.adaptive_acc_policy as adaptive_acc_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -117,6 +118,12 @@ class DataConfig:
     hdf5_camera_mapping: dict[str, str] | None = None
     # Scaler for action sequence length. The actual action length in dataset will be action_horizon * scaler.
     scaler: float = 1.0
+    # If true, use per-sample adaptive acceleration factors loaded from speedup_factor_dir.
+    use_adaptive_speedup: bool = False
+    # Root directory of raw episode data containing factor/ subdirectories.
+    speedup_factor_dir: str | None = None
+    # Ratio value used to locate factor files: factor/c{action_horizon}_{ratio}/adaptive_factor.json
+    speedup_ratio: float = 0.4
 
 
 class GroupFactory(Protocol):
@@ -268,6 +275,9 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
     mask_left_obs: bool = False
     filter_issue_samples: bool = False
     scaler:float = 1.
+    use_adaptive_speedup: bool = False
+    speedup_factor_dir: str | None = None
+    speedup_ratio: float = 0.4
     @property
     def state_sequence_length(self) -> int:
         return self.state_history_size + 1 + self.state_future_size
@@ -341,7 +351,11 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
-        if self.scaler != 1:
+        if self.use_adaptive_speedup:
+            data_transforms = data_transforms.push(
+                inputs=[adaptive_acc_policy.AdaptiveAccInputs(action_horizon=model_config.action_horizon)],
+            )
+        elif self.scaler != 1:
             data_transforms = data_transforms.push(
                 inputs=[acc_policy.VelocityAccInputs(action_horizon=model_config.action_horizon)],
             )
@@ -395,6 +409,9 @@ class LeRobotX2robotDataConfig(DataConfigFactory):
             state_history_size=self.state_history_size,
             state_future_size=self.state_future_size,
             scaler=self.scaler,
+            use_adaptive_speedup=self.use_adaptive_speedup,
+            speedup_factor_dir=self.speedup_factor_dir,
+            speedup_ratio=self.speedup_ratio,
             state_step=self.state_step,
             filter_issue_samples=self.filter_issue_samples and enable_augmentation,
         )
@@ -1640,6 +1657,33 @@ _CONFIGS = [
         batch_size=32,
         exp_name="table_clean_pi05_sm2sm_15hz_v2_h3f3oro_a30_dm10dh30po20",
     ),
+    TrainConfig(
+            name="table_clean_pi05_sm2sm_autoacc_0_4",
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                action_horizon=30,
+                pi05_state_sequence_in_suffix=True,
+            ),
+            data=LeRobotX2robotDataConfig(
+                repo_id="table_clean_x1pro_sm2sm_15hz_v2",
+                mode="sm2sm",
+                state_history_size=3,
+                state_future_size=3,
+                action_dim=28,
+                random_drop_master=0.10,
+                random_drop_history=0.30,
+                random_pos_offset=0.020,
+                use_adaptive_speedup=True,
+                speedup_factor_dir="/mnt/public3/datasets/x1pro/table_clean_sop_0720_v2/",
+                speedup_ratio=0.4,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params",
+                missing_regex=".*(?:lora|state_sequence_proj).*",
+            ),
+            batch_size=32,
+            exp_name="table_clean_pi05_sm2sm_15hz_v2_h3f3oro_a30_dm10dh30po20",
+        ),
     TrainConfig(
         name="pourtea_key_state_sm2sm",
         model=pi0_config.Pi0Config(action_horizon=20),

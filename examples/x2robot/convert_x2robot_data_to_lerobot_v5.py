@@ -38,18 +38,9 @@ os.environ['SVT_LOG'] = '0'
 
 
 # Configuration
-REPO_NAME = "pour_tea_chengdu_20260601-20260605_sm2sm"
+REPO_NAME = "table_clean_x1pro_sm2sm_15hz_v2"
 RAW_DATASET_PATHS = [
-    './datasets/pour_tea/chengdu_huangdandan_20260601_pm/',
-    './datasets/pour_tea/chengdu_huangdandan_20260602_pm/',
-    './datasets/pour_tea/chengdu_huangdandan_20260603_pm/',
-    './datasets/pour_tea/chengdu_huangdandan_20260604_pm/',
-    './datasets/pour_tea/chengdu_huangdandan_20260605_pm/',
-    './datasets/pour_tea/chengdu_wenpei_20260601_pm/',
-    './datasets/pour_tea/chengdu_wenpei_20260602_pm/',
-    './datasets/pour_tea/chengdu_wenpei_20260603_pm/',
-    './datasets/pour_tea/chengdu_wenpei_20260604_pm/',
-    './datasets/pour_tea/chengdu_wenpei_20260605_pm/',
+   "/mnt/public3/datasets/x1pro/table_clean_sop_0720_v2/",
 ]
 
 FILE_CAMERA_MAPPING = {
@@ -66,21 +57,21 @@ STATE_KEYS = [
     'follow_right_rotation',
     'follow_right_gripper',   
 
-    # 'master_left_position',
-    # 'master_left_rotation',
-    # 'master_left_gripper', 
-    # 'master_right_position',
-    # 'master_right_rotation',
-    # 'master_right_gripper',
+    'master_left_position',
+    'master_left_rotation',
+    'master_left_gripper', 
+    'master_right_position',
+    'master_right_rotation',
+    'master_right_gripper',
 ]
 
 ACTION_KEYS = [
-    # 'follow_left_position',
-    # 'follow_left_rotation', 
-    # 'follow_left_gripper',
-    # 'follow_right_position',
-    # 'follow_right_rotation',
-    # 'follow_right_gripper',
+    'follow_left_position',
+    'follow_left_rotation', 
+    'follow_left_gripper',
+    'follow_right_position',
+    'follow_right_rotation',
+    'follow_right_gripper',
     
     'master_left_position',
     'master_left_rotation',

@@ -1,6 +1,7 @@
 from collections.abc import Iterator, Sequence
 import json
 import logging
+import math
 import multiprocessing
 import os
 from pathlib import Path
@@ -828,6 +829,64 @@ class VelocityDebiasHDF5Dataset(Dataset):
 
 
 # ============================================================================
+# 自适应加速因子数据集
+# ============================================================================
+
+def _find_global_max_factor(factor_dir, action_horizon, ratio):
+    """扫描所有 episode 的因子 JSON，返回全局最大 factor（向上取整到 0.1）。"""
+    ratio_str = str(ratio).replace(".", "_")
+    dir_name = f"c{action_horizon}_{ratio_str}"
+    max_val = 1.0
+    for ep_dir in sorted(Path(factor_dir).iterdir()):
+        if not ep_dir.is_dir() or ep_dir.name.startswith("."):
+            continue
+        fpath = ep_dir / "factor" / dir_name / "adaptive_factor.json"
+        if fpath.exists():
+            with open(fpath) as f:
+                factors = json.load(f)["factors"]
+                max_val = max(max_val, max(factors))
+    if max_val <= 1.0:
+        return 1.0
+    return max_val
+
+
+class AdaptiveSpeedupDataset:
+    """在 LeRobot 数据集上包装，为每个样本注入 _speedup_factor 字段。"""
+
+    def __init__(self, dataset, factor_dir, action_horizon, ratio):
+        self._dataset = dataset
+        ratio_str = str(ratio).replace(".", "_")
+        dir_name = f"c{action_horizon}_{ratio_str}"
+
+        ep_dirs = sorted([
+            d for d in Path(factor_dir).iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ])
+        self._factors = []
+        for ep_dir in ep_dirs:
+            fpath = ep_dir / "factor" / dir_name / "adaptive_factor.json"
+            if fpath.exists():
+                with open(fpath) as f:
+                    self._factors.append(json.load(f)["factors"])
+            else:
+                self._factors.append(None)
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __getitem__(self, idx):
+        sample = self._dataset[idx]
+        ep = int(sample["episode_index"])
+        frame = int(sample["frame_index"])
+        factors = self._factors[ep] if ep < len(self._factors) else None
+        if factors is not None and frame < len(factors):
+            sample["_speedup_factor"] = factors[frame]
+        else:
+            sample["_speedup_factor"] = 1.0
+        return sample
+
+
+# ============================================================================
 # LeRobot 数据集创建函数
 # ============================================================================
 
@@ -1308,7 +1367,29 @@ def create_torch_data_loader(
         - JAX: batch_size 除以 process_count
     """
     # 创建数据集
-    dataset = create_torch_dataset(data_config, int(action_horizon*data_config.scaler), model_config, split=split, val_ratio=val_ratio, split_seed=split_seed)
+    effective_scaler = data_config.scaler
+    if data_config.use_adaptive_speedup and data_config.speedup_factor_dir:
+        global_max_factor = _find_global_max_factor(
+            data_config.speedup_factor_dir, action_horizon, data_config.speedup_ratio
+        )
+        effective_scaler = global_max_factor
+        logging.info(f"Adaptive speedup: global max factor = {global_max_factor:.2f}")
+
+    dataset = create_torch_dataset(
+        data_config,
+        int(action_horizon * effective_scaler),
+        model_config,
+        split=split, val_ratio=val_ratio, split_seed=split_seed,
+    )
+
+    if data_config.use_adaptive_speedup and data_config.speedup_factor_dir:
+        dataset = AdaptiveSpeedupDataset(
+            dataset,
+            data_config.speedup_factor_dir,
+            action_horizon,
+            data_config.speedup_ratio,
+        )
+
     # 应用数据变换
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
