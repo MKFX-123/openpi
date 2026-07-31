@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.arx_policy as arx_policy
+import openpi.policies.umi_policy as umi_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -235,7 +236,71 @@ class SimpleDataConfig(DataConfigFactory):
             data_transforms=self.data_transforms(model_config),
             model_transforms=self.model_transforms(model_config),
         )
-    
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotUMIDataConfig(DataConfigFactory):
+    """Data mapping for UMI (XRZero-G0 style) dual-arm symmetric LeRobot datasets.
+
+    Consumes the umi-v260729 dataset produced by
+    examples/x2robot/convert_umi_pickplace_to_lerobot.py. Stores ABSOLUTE map-frame
+    poses; the relative-rot6d conversion is done inside umi_policy.UmiInputs.
+    action_sequence_keys=("left_action","right_action") so the DataLoader samples
+    per-hand future action chunks (do NOT change to a single "actions").
+    """
+
+    action_sequence_keys: Sequence[str] = ("left_action", "right_action")
+
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "face_view": "face_view",
+                        "left_wrist_view": "left_wrist_view",
+                        "right_wrist_view": "right_wrist_view",
+                        "follow_left_pos": "follow_left_pos",
+                        "follow_left_rotvec": "follow_left_rotvec",
+                        "follow_left_gripper": "follow_left_gripper",
+                        "follow_right_pos": "follow_right_pos",
+                        "follow_right_rotvec": "follow_right_rotvec",
+                        "follow_right_gripper": "follow_right_gripper",
+                        "demo_start_pose_left": "demo_start_pose_left",
+                        "demo_start_pose_right": "demo_start_pose_right",
+                        "left_action": "left_action",
+                        "right_action": "right_action",
+                        "actions": "actions",
+                        "actions_is_pad": "actions_is_pad",
+                        "prompt": "task",
+                    }
+                )
+            ]
+        )
+    )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                umi_policy.UmiInputs(
+                    model_type=model_config.model_type,
+                    action_dim=model_config.action_dim,
+                    action_horizon=model_config.action_horizon,
+                )
+            ],
+            outputs=[umi_policy.UmiOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+        base_config = self.create_base_config(assets_dirs, model_config)
+        return dataclasses.replace(
+            base_config,
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=False,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotX2robotDataConfig(DataConfigFactory):
@@ -1726,6 +1791,44 @@ _CONFIGS = [
         exp_name="microwave_1218+0109+0325+0327_s2m_a30",
     ),
     
+    # UMI (XRZero-G0) pick_and_place — dual-arm symmetric, relative rot6d actions.
+    # Data produced by examples/x2robot/convert_umi_pickplace_to_lerobot.py
+    # from umi-v260729 episodes (absolute pico-map poses; umi_policy converts to
+    # relative rot6d, frame-invariant so map<->base drift cancels).
+    TrainConfig(
+        name="pi05_umi_pick_place",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotUMIDataConfig(
+            repo_id="pick_and_place_umi",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir="/root/.cache/openpi/openpi-assets/assets",
+                asset_id="pick_and_place_umi",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        log_interval=500,
+        save_interval=2_000,
+        keep_period=10_000,
+        num_workers=32,
+        num_train_steps=50_000,
+        batch_size=256,
+        checkpoint_base_dir="/mnt/public3/cwy",
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
