@@ -1805,10 +1805,6 @@ _CONFIGS = [
         data=LeRobotUMIDataConfig(
             repo_id="pick_and_place_umi",
             base_config=DataConfig(prompt_from_task=True),
-            assets=AssetsConfig(
-                assets_dir="/root/.cache/openpi/openpi-assets/assets",
-                asset_id="pick_and_place_umi",
-            ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
