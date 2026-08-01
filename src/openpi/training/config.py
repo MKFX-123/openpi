@@ -270,7 +270,6 @@ class LeRobotUMIDataConfig(DataConfigFactory):
                         "left_action": "left_action",
                         "right_action": "right_action",
                         "actions": "actions",
-                        "actions_is_pad": "actions_is_pad",
                         "prompt": "task",
                     }
                 )

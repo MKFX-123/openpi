@@ -91,11 +91,20 @@ def load_episode_json(path: Path):
     return pos_l, rotvec_l, grip_l, pos_r, rotvec_r, grip_r, fps, len(recs)
 
 
-def find_episodes(stage1_dir: Path) -> list[Path]:
-    """Find episode directories that contain a {name}.json + 3 mp4."""
+def find_episodes(stage1_dir: Path, keep_list: Path | None = None) -> list[Path]:
+    """Find episode directories that contain a {name}.json + 3 mp4.
+
+    If keep_list is given, only episode dirs whose name (without trailing /)
+    is listed in that file (one per line) are returned.
+    """
+    keep = None
+    if keep_list is not None:
+        keep = {ln.strip().rstrip("/") for ln in keep_list.read_text().splitlines() if ln.strip()}
     eps = []
     for d in sorted(stage1_dir.iterdir()):
         if not d.is_dir():
+            continue
+        if keep is not None and d.name not in keep:
             continue
         j = d / f"{d.name}.json"
         if not j.is_file():
@@ -293,6 +302,8 @@ def parse_args():
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--debug-episodes", type=int, default=3)
+    p.add_argument("--keep-list", type=Path, default=None,
+                   help="file with episode dir names to keep (one per line); skips the rest")
     return p.parse_args()
 
 
@@ -302,7 +313,7 @@ def main():
     if not stage1_dir.is_dir():
         raise FileNotFoundError(stage1_dir)
 
-    episode_dirs = find_episodes(stage1_dir)
+    episode_dirs = find_episodes(stage1_dir, keep_list=args.keep_list)
     if args.debug:
         episode_dirs = episode_dirs[: args.debug_episodes]
     print(f"[INFO] Found {len(episode_dirs)} episodes under {stage1_dir}")

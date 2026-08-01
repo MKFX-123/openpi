@@ -155,6 +155,8 @@ class UmiInputs(transforms.DataTransformFn):
             right_act10 = np.concatenate([right_pose9, right_grip], axis=-1)  # (H,10)
 
             inputs["actions"] = np.concatenate([left_act10, right_act10], axis=-1).astype(np.float32)  # (H,20)
+            # actions_is_pad: True for padded (repeated-last) action steps.
+            inputs["actions_is_pad"] = pad_mask
 
         # --------------------------
         # 4) Prompt
