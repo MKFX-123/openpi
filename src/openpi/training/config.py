@@ -1803,7 +1803,7 @@ _CONFIGS = [
             discrete_state_input=False,
         ),
         data=LeRobotUMIDataConfig(
-            repo_id="pick_and_place_umi",
+            repo_id="pick_and_place_umi,pick_and_place_umi_0802",  # 57 + 99 = 156 episodes (MultiDataset)
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
