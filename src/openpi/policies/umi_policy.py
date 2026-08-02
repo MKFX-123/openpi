@@ -187,11 +187,11 @@ class UmiOutputs(transforms.DataTransformFn):
     """
 
     def __call__(self, data: dict) -> dict:
-        act = np.asarray(data["actions"], dtype=np.float32)  # (H,20) or (20,)
+        # Model outputs (H, action_dim=32); the real action is the first 20 dims
+        # (left 10 + right 10), the rest is zero-padding. Slice to 20 first.
+        act = np.asarray(data["actions"], dtype=np.float32)[..., :20]  # (H,20) or (20,)
         if act.ndim == 1:
             act = act[None, :]
-        if act.shape[-1] != 20:
-            raise ValueError(f"Expected model actions last-dim=20, got {act.shape}")
 
         l = act[..., :10]    # (H,10)
         r = act[..., 10:20]  # (H,10)
