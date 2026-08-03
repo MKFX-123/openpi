@@ -1824,6 +1824,40 @@ _CONFIGS = [
         checkpoint_base_dir="/mnt/public3/cwy",
     ),
 
+    # UMI pick_and_place — s2s mode (absolute euler, no master, ArxInputs/OpenPiScheduler).
+    # Data produced by examples/x2robot/convert_umi_pickplace_to_lerobot.py (s2s format).
+    # Uses existing LeRobotX2robotDataConfig + ArxInputs(mode="s2s") — no custom code.
+    TrainConfig(
+        name="pi05_pick_place_s2s",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotX2robotDataConfig(
+            repo_id="pick_and_place_s2s",
+            mode="s2s",
+            action_dim=14,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        log_interval=500,
+        save_interval=2_000,
+        keep_period=10_000,
+        num_workers=32,
+        num_train_steps=50_000,
+        batch_size=256,
+        checkpoint_base_dir="/mnt/public3/cwy",
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),

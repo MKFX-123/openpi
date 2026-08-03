@@ -61,10 +61,12 @@ class UmiInputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # --------------------------
         # 1) Images
-        # --------------------------
-        face_img = _parse_image(data["face_view"])
-        left_img = _parse_image(data["left_wrist_view"])
-        right_img = _parse_image(data["right_wrist_view"])
+        # robot-bridge ships images nested under "images" (deploy); LeRobot
+        # training datasets expose them at top level. Support both.
+        img_src = data["images"] if "images" in data else data
+        face_img = _parse_image(img_src["face_view"])
+        left_img = _parse_image(img_src["left_wrist_view"])
+        right_img = _parse_image(img_src["right_wrist_view"])
 
         inputs = {
             "image": {

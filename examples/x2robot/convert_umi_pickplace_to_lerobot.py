@@ -13,20 +13,16 @@ mcap_to_training.py with parse_version umi-v260729):
     ├── leftImg.mp4
     └── rightImg.mp4
 
-Output: a LeRobot dataset (repo_id) with:
+Output: a LeRobot dataset (repo_id) with s2s format:
 
   face_view / left_wrist_view / right_wrist_view   (video, ffmpeg transcoded)
-  follow_left_pos(3) / follow_left_rotvec(3) / follow_left_gripper(1)   # abs map frame
-  follow_right_pos(3) / follow_right_rotvec(3) / follow_right_gripper(1)
-  left_action(7) / right_action(7)               # NEXT-frame abs pose+gripper
-  actions(14)                                    # concat(left_action, right_action)
-  demo_start_pose_left(6) / demo_start_pose_right(6)   # first-frame pos+rotvec
+  state(14)   = [left pos3 + euler3 + grip1, right pos3 + euler3 + grip1]  # abs euler
+  actions(14) = next-frame state (same layout)
   task (str)
 
 Conventions:
-  - rotation stored as ROTVEC (euler->rotvec conversion here), matching umi_policy.
-  - actions stored as ABSOLUTE next-frame pose (pos+rotvec+gripper). The relative
-    conversion (inv(cur)@target -> rot6d) is done in umi_policy.UmiInputs, NOT here.
+  - rotation stored as EULER xyz (NOT rotvec) — matches ArxInputs s2s mode.
+  - state/actions are ABSOLUTE poses (next-frame for actions).
   - last frame is dropped (action = frame i+1), so writable frames = total - 1.
 
 Engineering (copied from convert_x2robot_data_to_lerobot_v5.py):
@@ -72,7 +68,9 @@ def load_episode_json(path: Path):
     """Load umi-v260729 episode json.
 
     Returns arrays:
-      pos_l(N,3), rotvec_l(N,3), grip_l(N,), pos_r, rotvec_r, grip_r, fps.
+      pos_l(N,3), eul_l(N,3), grip_l(N,1), pos_r, eul_r, grip_r, fps.
+    Rotation is kept as euler xyz (NOT converted to rotvec) — s2s/ArxInputs
+    expects euler.
     """
     meta = json.loads(path.read_text(encoding="utf-8"))
     data = meta["data"]
@@ -85,10 +83,8 @@ def load_episode_json(path: Path):
     pos_r = np.array([f["follow_right_position"] for f in recs], dtype=np.float32)
     eul_r = np.array([f["follow_right_rotation"] for f in recs], dtype=np.float32)
     grip_r = np.array([f["follow_right_gripper"] for f in recs], dtype=np.float32).reshape(-1, 1)
-    rotvec_l = euler_to_rotvec(eul_l)
-    rotvec_r = euler_to_rotvec(eul_r)
     fps = float(meta.get("fps", 30.0))
-    return pos_l, rotvec_l, grip_l, pos_r, rotvec_r, grip_r, fps, len(recs)
+    return pos_l, eul_l, grip_l, pos_r, eul_r, grip_r, fps, len(recs)
 
 
 def find_episodes(stage1_dir: Path, keep_list: Path | None = None) -> list[Path]:
@@ -342,20 +338,10 @@ def main():
         "face_view": {"dtype": "video", "shape": (Ht, Wt, 3), "names": ["h", "w", "c"]},
         "left_wrist_view": {"dtype": "video", "shape": (Hl, Wl, 3), "names": ["h", "w", "c"]},
         "right_wrist_view": {"dtype": "video", "shape": (Hr, Wr, 3), "names": ["h", "w", "c"]},
-        "follow_left_pos": {"dtype": "float32", "shape": (3,), "names": ["x", "y", "z"]},
-        "follow_left_rotvec": {"dtype": "float32", "shape": (3,), "names": ["rx", "ry", "rz"]},
-        "follow_left_gripper": {"dtype": "float32", "shape": (1,), "names": ["g"]},
-        "follow_right_pos": {"dtype": "float32", "shape": (3,), "names": ["x", "y", "z"]},
-        "follow_right_rotvec": {"dtype": "float32", "shape": (3,), "names": ["rx", "ry", "rz"]},
-        "follow_right_gripper": {"dtype": "float32", "shape": (1,), "names": ["g"]},
-        "demo_start_pose_left": {"dtype": "float32", "shape": (6,), "names": ["x", "y", "z", "rx", "ry", "rz"]},
-        "demo_start_pose_right": {"dtype": "float32", "shape": (6,), "names": ["x", "y", "z", "rx", "ry", "rz"]},
-        "left_action": {"dtype": "float32", "shape": (7,), "names": ["x", "y", "z", "rx", "ry", "rz", "g"]},
-        "right_action": {"dtype": "float32", "shape": (7,), "names": ["x", "y", "z", "rx", "ry", "rz", "g"]},
-        "actions": {"dtype": "float32", "shape": (14,), "names": [
-            "lx", "ly", "lz", "lrx", "lry", "lrz", "lg",
-            "rx", "ry", "rz", "rrx", "rry", "rrz", "rg",
-        ]},
+        # s2s format: state = [left pos3 + euler3 + grip1, right pos3 + euler3 + grip1] = 14D
+        # actions = next-frame state (14D). Euler xyz (NOT rotvec) — matches ArxInputs.
+        "state": {"dtype": "float32", "shape": (14,), "names": ["state"]},
+        "actions": {"dtype": "float32", "shape": (14,), "names": ["actions"]},
     }
 
     dataset = NoVideoIOLeRobotDataset.create(
@@ -433,36 +419,23 @@ def main():
     for ep_dir, vfc in tqdm.tqdm(list(zip(processed_eps, processed_counts, strict=True)), desc="build"):
         ep_json = ep_dir / f"{ep_dir.name}.json"
         try:
-            pos_l, rvec_l, grip_l, pos_r, rvec_r, grip_r, _, T = load_episode_json(ep_json)
+            pos_l, eul_l, grip_l, pos_r, eul_r, grip_r, _, T = load_episode_json(ep_json)
         except Exception as e:
             print(f"[skip] {ep_dir.name}: {e}")
             continue
-
-        # demo start pose (pos + rotvec) from first frame
-        demo_l = np.concatenate([pos_l[0], rvec_l[0]], axis=0).astype(np.float32)
-        demo_r = np.concatenate([pos_r[0], rvec_r[0]], axis=0).astype(np.float32)
 
         n = min(T - 1, vfc)  # drop last frame (action = i+1)
         dataset._video_frame_count = n
         for i in range(n):
             j = i + 1  # next-frame absolute target
-            left_action = np.concatenate([pos_l[j], rvec_l[j], grip_l[j]], axis=0).astype(np.float32)
-            right_action = np.concatenate([pos_r[j], rvec_r[j], grip_r[j]], axis=0).astype(np.float32)
-            actions = np.concatenate([left_action, right_action], axis=0).astype(np.float32)
+            # s2s state = [left pos3 + euler3 + grip1, right pos3 + euler3 + grip1] = 14D
+            state = np.concatenate([pos_l[i], eul_l[i], grip_l[i], pos_r[i], eul_r[i], grip_r[i]], axis=0).astype(np.float32)
+            actions = np.concatenate([pos_l[j], eul_l[j], grip_l[j], pos_r[j], eul_r[j], grip_r[j]], axis=0).astype(np.float32)
             dataset.add_frame({
                 "face_view": dummy_face,
                 "left_wrist_view": dummy_left,
                 "right_wrist_view": dummy_right,
-                "follow_left_pos": pos_l[i],
-                "follow_left_rotvec": rvec_l[i],
-                "follow_left_gripper": grip_l[i],
-                "follow_right_pos": pos_r[i],
-                "follow_right_rotvec": rvec_r[i],
-                "follow_right_gripper": grip_r[i],
-                "demo_start_pose_left": demo_l,
-                "demo_start_pose_right": demo_r,
-                "left_action": left_action,
-                "right_action": right_action,
+                "state": state,
                 "actions": actions,
                 "task": args.task,
             })
